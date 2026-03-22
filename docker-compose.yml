@@ -1,0 +1,192 @@
+version: "3.9"
+
+services:
+  # ============================================
+  # BASES DE DATOS
+  # ============================================
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-enjambre}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-enjambre}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./deploy/init-db.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-enjambre}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - enjambre
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - enjambre
+
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - mongo_data:/data/db
+    ports:
+      - "27017:27017"
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - enjambre
+
+  elasticsearch:
+    image: elasticsearch:8.12.0
+    restart: unless-stopped
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    ports:
+      - "9200:9200"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+    networks:
+      - enjambre
+
+  # ============================================
+  # ENJAMBRE API (Cerebro)
+  # ============================================
+  enjambre-api:
+    build:
+      context: ./enjambre-api
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - PORT=3500
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-enjambre}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-enjambre}
+      - SOC_API_URL=${SOC_API_URL:-http://soc-backend:8080}
+      - SOC_API_KEY=${SOC_API_KEY}
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_KEY}
+      - JWT_SECRET=${JWT_SECRET}
+      - ERXES_API_URL=http://erxes-api:3300
+    ports:
+      - "3500:3500"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - enjambre
+
+  # ============================================
+  # ENJAMBRE DASHBOARD (Centro de Comando)
+  # ============================================
+  enjambre-dashboard:
+    build:
+      context: ./enjambre-dashboard
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "3600:80"
+    depends_on:
+      - enjambre-api
+    networks:
+      - enjambre
+
+  # ============================================
+  # BLACKWOLF SOC (Ciberseguridad)
+  # ============================================
+  soc-backend:
+    image: blackwolf-soc:latest
+    build:
+      context: ./soc
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:mysql://soc-mysql:3306/blackwolf_soc
+      - SPRING_DATASOURCE_USERNAME=root
+      - SPRING_DATASOURCE_PASSWORD=${POSTGRES_PASSWORD}
+      - SPRING_ELASTICSEARCH_URIS=http://elasticsearch:9200
+      - SPRING_DATA_REDIS_HOST=redis
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    ports:
+      - "8080:8080"
+    depends_on:
+      - soc-mysql
+      - elasticsearch
+      - redis
+    networks:
+      - enjambre
+
+  soc-mysql:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${POSTGRES_PASSWORD}
+      MYSQL_DATABASE: blackwolf_soc
+    volumes:
+      - mysql_data:/var/lib/mysql
+    ports:
+      - "3306:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - enjambre
+
+  # ============================================
+  # NGINX REVERSE PROXY
+  # ============================================
+  nginx:
+    image: nginx:alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/conf.d:/etc/nginx/conf.d
+      - ./nginx/ssl:/etc/nginx/ssl
+    depends_on:
+      - enjambre-api
+      - enjambre-dashboard
+    networks:
+      - enjambre
+
+volumes:
+  postgres_data:
+  redis_data:
+  mongo_data:
+  es_data:
+  mysql_data:
+
+networks:
+  enjambre:
+    driver: bridge

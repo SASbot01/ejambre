@@ -1,0 +1,36 @@
+# ============================================
+# CLOUDFLARE TUNNEL CONFIG
+# ============================================
+# Copia este archivo a ~/.cloudflared/config.yml
+# y reemplaza TUNNEL_ID con tu ID real
+#
+# Pasos:
+#   1. cloudflared tunnel create enjambre
+#   2. Copia el TUNNEL_ID
+#   3. cloudflared tunnel route dns enjambre comando.tudominio.com
+#   4. cloudflared tunnel route dns enjambre api.tudominio.com
+#   5. cloudflared tunnel route dns enjambre forms.tudominio.com
+#   6. cloudflared tunnel route dns enjambre soc.tudominio.com
+#   7. cloudflared tunnel run enjambre
+
+tunnel: TUNNEL_ID
+credentials-file: /root/.cloudflared/TUNNEL_ID.json
+
+ingress:
+  - hostname: comando.tudominio.com
+    service: http://localhost:80
+
+  - hostname: api.tudominio.com
+    service: http://localhost:80
+
+  - hostname: forms.tudominio.com
+    service: http://localhost:80
+
+  - hostname: soc.tudominio.com
+    service: http://localhost:80
+
+  - hostname: ventas.tudominio.com
+    service: http://localhost:80
+
+  # Catch-all (requerido por Cloudflare)
+  - service: http_status:404
