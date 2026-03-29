@@ -2,6 +2,8 @@ import { orchestrator } from '../agents/orchestrator.js';
 import { eventBus } from '../events/event-bus.js';
 import { query, queryOne } from '../config/database.js';
 import { v4 as uuid } from 'uuid';
+import { authenticate } from '../auth/auth.js';
+import { startDevSession } from '../agents/dev-worker.js';
 
 export function registerRoutes(app) {
   // ============================================
@@ -9,6 +11,23 @@ export function registerRoutes(app) {
   // ============================================
   app.get('/health', async () => {
     return { status: 'ok', service: 'enjambre-cerebro', timestamp: new Date().toISOString() };
+  });
+
+  // ============================================
+  // AUTENTICACIÓN
+  // ============================================
+  app.post('/api/auth/login', async (req, reply) => {
+    const { email, password } = req.body || {};
+    if (!email || !password) {
+      reply.code(400).send({ error: 'email y password son requeridos' });
+      return;
+    }
+    const result = authenticate(email, password);
+    if (!result) {
+      reply.code(401).send({ error: 'Credenciales inválidas' });
+      return;
+    }
+    return result;
   });
 
   // ============================================
@@ -55,7 +74,7 @@ export function registerRoutes(app) {
   });
 
   app.get('/api/events', async (req) => {
-    const { limit = 50, agent, type } = req.query;
+    const { limit = 50, offset = 0, agent, type } = req.query;
     let sql = 'SELECT * FROM events WHERE 1=1';
     const params = [];
 
@@ -68,8 +87,9 @@ export function registerRoutes(app) {
       sql += ` AND event_type = $${params.length}`;
     }
 
-    sql += ` ORDER BY created_at DESC LIMIT $${params.length + 1}`;
+    sql += ` ORDER BY created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
     params.push(Number(limit));
+    params.push(Number(offset));
 
     return query(sql, params);
   });
@@ -168,7 +188,7 @@ export function registerRoutes(app) {
   // LEADS
   // ============================================
   app.get('/api/leads', async (req) => {
-    const { status, limit = 50 } = req.query;
+    const { status, limit = 50, offset = 0 } = req.query;
     let sql = 'SELECT * FROM leads';
     const params = [];
 
@@ -177,8 +197,9 @@ export function registerRoutes(app) {
       sql += ` WHERE status = $1`;
     }
 
-    sql += ` ORDER BY created_at DESC LIMIT $${params.length + 1}`;
+    sql += ` ORDER BY created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
     params.push(Number(limit));
+    params.push(Number(offset));
 
     return query(sql, params);
   });
@@ -212,6 +233,129 @@ export function registerRoutes(app) {
       'INSERT INTO setters (nombre, email) VALUES ($1, $2) RETURNING *',
       [nombre, email]
     );
+  });
+
+  // ============================================
+  // WEBHOOK CENTRAL (Dashboard-Ops → Enjambre)
+  // Recibe logs de agentes de central.blackwolfsec.io
+  // ============================================
+  app.post('/api/webhooks/central', async (req) => {
+    const data = req.body;
+
+    // Map Central event to Enjambre event
+    const event = data.event || data.type || 'central.unknown';
+    const source = data.source || 'central';
+    const payload = {
+      action: data.action || null,
+      data: data.data || data.payload || {},
+      client_id: data.client_id || null,
+      contact_id: data.contact_id || null,
+      original_event: event,
+    };
+
+    // Map source agent names from Central
+    const agentMap = {
+      prospector: 'prospector',
+      personalizer: 'prospector',
+      enricher: 'prospector',
+      analytics: 'ops',
+      email: 'prospector',
+    };
+
+    const sourceAgent = agentMap[source] || source;
+
+    await eventBus.publish(event, sourceAgent, payload);
+
+    return { ok: true, event, source: sourceAgent };
+  });
+
+  // ============================================
+  // DEV AGENT — Developer AI
+  // ============================================
+
+  // Tickets CRUD
+  app.get('/api/dev/tickets', async () => {
+    return query('SELECT * FROM dev_tickets ORDER BY created_at DESC LIMIT 100');
+  });
+
+  app.post('/api/dev/tickets', async (req) => {
+    const { title, description, project, status } = req.body;
+    return queryOne(
+      'INSERT INTO dev_tickets (title, description, project, status) VALUES ($1, $2, $3, $4) RETURNING *',
+      [title, description || null, project || 'general', status || 'pending']
+    );
+  });
+
+  app.put('/api/dev/tickets/:id', async (req) => {
+    const { status, result } = req.body;
+    return queryOne(
+      'UPDATE dev_tickets SET status = COALESCE($1, status), result = COALESCE($2, result), updated_at = NOW() WHERE id = $3 RETURNING *',
+      [status, result, req.params.id]
+    );
+  });
+
+  // Sessions
+  app.get('/api/dev/sessions', async () => {
+    return query('SELECT * FROM dev_sessions ORDER BY created_at DESC LIMIT 20');
+  });
+
+  app.post('/api/dev/sessions', async (req) => {
+    const { duration_hours } = req.body;
+    const session = await queryOne(
+      'INSERT INTO dev_sessions (duration_hours, status) VALUES ($1, $2) RETURNING *',
+      [duration_hours || 2, 'active']
+    );
+
+    // Launch autonomous dev worker in background
+    startDevSession(duration_hours || 2, session.id, eventBus, queryOne).catch(err => {
+      console.error('[DevWorker] Session error:', err.message);
+    });
+
+    return session;
+  });
+
+  // Chat with Dev Agent
+  app.post('/api/dev/chat', async (req) => {
+    const { message, session_id } = req.body;
+    if (!message) return { error: 'message requerido' };
+
+    try {
+      const result = await orchestrator.process(
+        `[DEV AGENT] El usuario te habla como Dev Agent. Tu rol es analizar, optimizar y mejorar los proyectos de BlackWolf (Enjambre, SOC, Dashboard-Ops). ` +
+        `REGLA CRITICA: NUNCA toques datos de clientes, CRM, ventas, leads, ni contactos. Solo codigo, configuracion, rendimiento y seguridad. ` +
+        `Si creas un ticket, responde con JSON {tickets_created: [{title, description, project}]} al final. ` +
+        `Proyectos: Enjambre (/home/s4sf/ejambre), SOC (/home/s4sf/ejambre/soc si existe), Dashboard-Ops (/home/s4sf/ejambre/Dashboard-Ops-). ` +
+        `Mensaje del usuario: ${message}`,
+        `dev-${session_id || 'default'}`
+      );
+
+      // Try to extract tickets from response
+      let tickets_created = [];
+      try {
+        const jsonMatch = result.response?.match(/\{[\s\S]*tickets_created[\s\S]*\}/);
+        if (jsonMatch) {
+          const parsed = JSON.parse(jsonMatch[0]);
+          if (parsed.tickets_created) {
+            for (const t of parsed.tickets_created) {
+              const ticket = await queryOne(
+                'INSERT INTO dev_tickets (title, description, project) VALUES ($1, $2, $3) RETURNING *',
+                [t.title, t.description || null, t.project || 'general']
+              );
+              tickets_created.push(ticket);
+            }
+          }
+        }
+      } catch {}
+
+      await eventBus.publish('dev.chat', 'developer', { message: message.slice(0, 100), tickets: tickets_created.length });
+
+      return {
+        response: result.response?.replace(/\{[\s\S]*tickets_created[\s\S]*\}/, '').trim() || result.response,
+        tickets_created,
+      };
+    } catch (err) {
+      return { error: err.message, response: `Error: ${err.message}`, tickets_created: [] };
+    }
   });
 
   // ============================================
