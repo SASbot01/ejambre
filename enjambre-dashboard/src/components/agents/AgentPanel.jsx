@@ -1,4 +1,4 @@
-import React, { memo, useState, useEffect } from 'react';
+import React, { memo, useState, useEffect, useMemo } from 'react';
 import { getAgentStatus } from '../../services/api.js';
 import {
   Shield, Users, TrendingUp, FileText, Bot, MessageSquare,
@@ -102,22 +102,22 @@ const AgentPanel = memo(({ events = [] }) => {
     return () => clearInterval(interval);
   }, []);
 
-  function getStatus(agentId) {
+  const getStatus = useMemo(() => (agentId) => {
     const agent = AGENTS.find(a => a.id === agentId);
     if (agent?.alwaysOnline) return true;
     const s = agentStatuses.find(a => a.agent_name === agentId);
     return s?.status === 'online';
-  }
+  }, [agentStatuses]);
 
-  function getMetrics(agentId) {
+  const getMetrics = useMemo(() => (agentId) => {
     const s = agentStatuses.find(a => a.agent_name === agentId);
     return s?.metrics || {};
-  }
+  }, [agentStatuses]);
 
-  function getAgentEvents(agentId) {
+  const getAgentEvents = useMemo(() => (agentId) => {
     if (agentId === 'cerebro') return events.slice(0, 30);
     return events.filter(e => e.source_agent === agentId).slice(0, 30);
-  }
+  }, [events]);
 
   const selected = AGENTS.find(a => a.id === selectedAgent);
 
