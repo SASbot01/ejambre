@@ -90,7 +90,7 @@ export default function App() {
               color: '#888', textDecoration: 'none', transition: 'all 0.15s',
               marginRight: 4, flexShrink: 0,
             }}
-            onMouseEnter={e => { e.currentTarget.style.borderColor = '#FF6B00'; e.currentTarget.style.color = '#FF6B00'; }}
+            onMouseEnter={e => { e.currentTarget.style.borderColor = '#F5F5F5'; e.currentTarget.style.color = '#F5F5F5'; }}
             onMouseLeave={e => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.1)'; e.currentTarget.style.color = '#888'; }}
           >
             <ArrowLeft size={14} />
@@ -101,9 +101,9 @@ export default function App() {
             <div style={{
               position: 'absolute', bottom: -3, right: -3,
               width: 14, height: 14, borderRadius: 4,
-              background: '#0A0A0A', border: '1.5px solid #FF6B00',
+              background: '#0A0A0A', border: '1.5px solid #F5F5F5',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
-              fontSize: '0.35rem', fontWeight: 900, color: '#FF6B00',
+              fontSize: '0.35rem', fontWeight: 900, color: '#F5F5F5',
             }}>BW</div>
           </div>
           <span className="brand-wolf">BLACKWOLF</span>
