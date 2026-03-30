@@ -15,7 +15,7 @@ function authHeaders() { return { 'Content-Type': 'application/json', Authorizat
 
 // ─── All agents as "employees" in the office ───
 const OFFICE_AGENTS = [
-  { id: 'cerebro', icon: Bot, label: 'CEREBRO', role: 'Orquestador Central — Dirige todos los agentes', color: '#FF6B00', dept: 'Direccion', alwaysOnline: true },
+  { id: 'cerebro', icon: Bot, label: 'CEREBRO', role: 'Orquestador Central — Dirige todos los agentes', color: '#F5F5F5', dept: 'Direccion', alwaysOnline: true },
   { id: 'ciber', icon: Shield, label: 'CIBER / SOC', role: 'Analista de Ciberseguridad 24/7', color: '#EF4444', dept: 'Ciberseguridad' },
   { id: 'crm', icon: Users, label: 'CRM / Ventas', role: 'Pipeline Manager — Leads & Contactos', color: '#3B82F6', dept: 'Comercial' },
   { id: 'ops', icon: TrendingUp, label: 'OPS / ERP', role: 'Revenue, Comisiones & Proyecciones', color: '#22C55E', dept: 'Operaciones' },
@@ -112,7 +112,7 @@ export default function EnjambreHome({ onNavigate, events, connected, user }) {
   function switchMode(mode) { setChatMode(mode); setChatModeOpen(false); setMessages([{ role: 'assistant', content: mode === 'cerebro' ? 'Cerebro activo.' : 'Dev Agent listo.' }]); }
 
   const kpis = [
-    { label: 'Leads Hoy', value: stats?.hoy ?? '—', color: '#FF6B00' },
+    { label: 'Leads Hoy', value: stats?.hoy ?? '—', color: '#F5F5F5' },
     { label: 'Semana', value: stats?.esta_semana ?? '—', color: '#3B82F6' },
     { label: 'Nuevos', value: stats?.nuevos ?? '—', color: '#FFB800' },
     { label: 'Contactados', value: stats?.contactados ?? '—', color: '#A855F7' },
@@ -248,7 +248,7 @@ export default function EnjambreHome({ onNavigate, events, connected, user }) {
       {/* Back */}
       <motion.div initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} style={{ paddingTop: 16, marginBottom: 6 }}>
         <a href={DASHBOARD_OPS_URL} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 14px', borderRadius: 8, background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', color: '#666', fontSize: '0.7rem', fontWeight: 500, textDecoration: 'none', transition: 'all 0.2s' }}
-          onMouseEnter={e => { e.currentTarget.style.borderColor = '#FF6B0050'; e.currentTarget.style.color = '#FF6B00'; }}
+          onMouseEnter={e => { e.currentTarget.style.borderColor = '#F5F5F550'; e.currentTarget.style.color = '#F5F5F5'; }}
           onMouseLeave={e => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)'; e.currentTarget.style.color = '#666'; }}>
           <ArrowLeft size={12} /> Home Central
         </a>
@@ -257,13 +257,13 @@ export default function EnjambreHome({ onNavigate, events, connected, user }) {
       {/* Logo */}
       <motion.div initial={{ opacity: 0, y: -15 }} animate={{ opacity: 1, y: 0 }} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <div style={{ width: 44, height: 44, borderRadius: 13, background: 'linear-gradient(135deg, #FF6B00, #FFB800)', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 4px 20px rgba(255,107,0,0.2)', position: 'relative' }}>
+          <div style={{ width: 44, height: 44, borderRadius: 13, background: '#F5F5F5', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 4px 20px rgba(245,245,245,0.12)', position: 'relative' }}>
             <Zap size={20} color="#000" />
-            <div style={{ position: 'absolute', bottom: -3, right: -3, width: 16, height: 16, borderRadius: 5, background: '#0A0A0A', border: '1.5px solid #FF6B00', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.4rem', fontWeight: 900, color: '#FF6B00' }}>BW</div>
+            <div style={{ position: 'absolute', bottom: -3, right: -3, width: 16, height: 16, borderRadius: 5, background: '#0A0A0A', border: '1.5px solid #F5F5F5', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.4rem', fontWeight: 900, color: '#F5F5F5' }}>BW</div>
           </div>
           <div>
             <div style={{ fontSize: '1.2rem', fontWeight: 800, letterSpacing: 2, lineHeight: 1 }}>
-              <span style={{ background: 'linear-gradient(135deg, #FF6B00, #FFB800)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>BLACKWOLF</span>
+              <span style={{ background: '#F5F5F5', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>BLACKWOLF</span>
               <span style={{ color: '#fff', fontWeight: 600, letterSpacing: 1, marginLeft: 8 }}>ENJAMBRE</span>
             </div>
             <div style={{ fontSize: '0.65rem', color: '#555', marginTop: 2 }}>Centro de Operaciones IA</div>
@@ -292,8 +292,8 @@ export default function EnjambreHome({ onNavigate, events, connected, user }) {
       {/* ═══ OFICINA — All agents by department ═══ */}
       <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.25 }} style={{ marginBottom: 20 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
-          <Network size={14} color="#FF6B00" />
-          <div style={{ fontSize: '0.7rem', color: '#FF6B00', textTransform: 'uppercase', letterSpacing: 1.5, fontWeight: 700 }}>Oficina</div>
+          <Network size={14} color="#F5F5F5" />
+          <div style={{ fontSize: '0.7rem', color: '#F5F5F5', textTransform: 'uppercase', letterSpacing: 1.5, fontWeight: 700 }}>Oficina</div>
           <div style={{ fontSize: '0.55rem', color: '#444', background: 'rgba(255,107,0,0.1)', padding: '2px 8px', borderRadius: 6 }}>{OFFICE_AGENTS.length} agentes</div>
         </div>
 
@@ -344,12 +344,12 @@ export default function EnjambreHome({ onNavigate, events, connected, user }) {
         <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.6 }} style={{ ...card, padding: '14px 16px' }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
             <div style={{ fontSize: '0.6rem', color: '#555', textTransform: 'uppercase', letterSpacing: 1.5, fontWeight: 700 }}>Actividad reciente</div>
-            <button onClick={() => onNavigate('events')} style={{ background: 'none', border: 'none', color: '#FF6B00', fontSize: '0.6rem', fontWeight: 600, cursor: 'pointer' }}>Ver todo</button>
+            <button onClick={() => onNavigate('events')} style={{ background: 'none', border: 'none', color: '#F5F5F5', fontSize: '0.6rem', fontWeight: 600, cursor: 'pointer' }}>Ver todo</button>
           </div>
           {events.slice(0, 6).map((ev, i) => (
             <div key={i} style={{ display: 'flex', gap: 8, padding: '4px 0', borderBottom: '1px solid rgba(255,255,255,0.03)', fontSize: '0.65rem', fontFamily: "'JetBrains Mono', monospace" }}>
               <span style={{ color: '#333', minWidth: 42, flexShrink: 0 }}>{new Date(ev.timestamp).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}</span>
-              <span style={{ color: '#FF6B00', fontWeight: 600, minWidth: 50, flexShrink: 0 }}>{ev.source_agent || 'sys'}</span>
+              <span style={{ color: '#F5F5F5', fontWeight: 600, minWidth: 50, flexShrink: 0 }}>{ev.source_agent || 'sys'}</span>
               <span style={{ color: '#777', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ev.event_type || '—'}</span>
             </div>
           ))}
@@ -375,14 +375,14 @@ export default function EnjambreHome({ onNavigate, events, connected, user }) {
                 style={{ position: 'fixed', bottom: 24, right: 24, width: 400, maxWidth: 'calc(100vw - 48px)', maxHeight: '65vh', background: '#0D0D0D', border: '1px solid #1F1F1F', borderRadius: 18, display: 'flex', flexDirection: 'column', zIndex: 1001, overflow: 'hidden', boxShadow: '0 20px 60px rgba(0,0,0,0.6)' }}>
                 <div style={{ padding: '12px 16px', borderBottom: '1px solid #1F1F1F', display: 'flex', alignItems: 'center', gap: 10 }}>
                   <div style={{ position: 'relative' }}>
-                    <button onClick={() => setChatModeOpen(!chatModeOpen)} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 10, background: chatMode === 'cerebro' ? 'rgba(255,107,0,0.12)' : 'rgba(16,185,129,0.12)', border: `1px solid ${chatMode === 'cerebro' ? '#FF6B0040' : '#10B98140'}`, cursor: 'pointer', color: chatMode === 'cerebro' ? '#FF6B00' : '#10B981', fontSize: '0.75rem', fontWeight: 700 }}>
+                    <button onClick={() => setChatModeOpen(!chatModeOpen)} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 10, background: chatMode === 'cerebro' ? 'rgba(245,245,245,0.08)' : 'rgba(16,185,129,0.12)', border: `1px solid ${chatMode === 'cerebro' ? '#F5F5F540' : '#10B98140'}`, cursor: 'pointer', color: chatMode === 'cerebro' ? '#F5F5F5' : '#10B981', fontSize: '0.75rem', fontWeight: 700 }}>
                       {chatMode === 'cerebro' ? <Brain size={14} /> : <Code2 size={14} />}
                       {chatMode === 'cerebro' ? 'Cerebro' : 'DevOps'}
                       <ChevronDown size={12} style={{ opacity: 0.6 }} />
                     </button>
                     {chatModeOpen && (
                       <div style={{ position: 'absolute', top: '100%', left: 0, marginTop: 4, background: '#111', border: '1px solid #333', borderRadius: 10, overflow: 'hidden', zIndex: 10, minWidth: 150 }}>
-                        <button onClick={() => switchMode('cerebro')} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', background: chatMode === 'cerebro' ? 'rgba(255,107,0,0.08)' : 'transparent', border: 'none', color: '#ddd', fontSize: '0.75rem', cursor: 'pointer', width: '100%', textAlign: 'left' }}><Brain size={14} color="#FF6B00" /> Cerebro IA</button>
+                        <button onClick={() => switchMode('cerebro')} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', background: chatMode === 'cerebro' ? 'rgba(245,245,245,0.06)' : 'transparent', border: 'none', color: '#ddd', fontSize: '0.75rem', cursor: 'pointer', width: '100%', textAlign: 'left' }}><Brain size={14} color="#F5F5F5" /> Cerebro IA</button>
                         <button onClick={() => switchMode('devops')} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', background: chatMode === 'devops' ? 'rgba(16,185,129,0.08)' : 'transparent', border: 'none', color: '#ddd', fontSize: '0.75rem', cursor: 'pointer', width: '100%', textAlign: 'left' }}><Code2 size={14} color="#10B981" /> DevOps</button>
                       </div>
                     )}
@@ -393,16 +393,16 @@ export default function EnjambreHome({ onNavigate, events, connected, user }) {
                 <div style={{ flex: 1, overflowY: 'auto', padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 10 }}>
                   {messages.map((m, i) => (
                     <div key={i} style={{ display: 'flex', justifyContent: m.role === 'user' ? 'flex-end' : 'flex-start' }}>
-                      <div style={{ maxWidth: '85%', padding: '8px 12px', borderRadius: 12, background: m.role === 'user' ? (chatMode === 'cerebro' ? 'rgba(255,107,0,0.12)' : 'rgba(16,185,129,0.12)') : 'rgba(255,255,255,0.04)', border: `1px solid ${m.role === 'user' ? (chatMode === 'cerebro' ? '#FF6B0030' : '#10B98130') : 'rgba(255,255,255,0.06)'}`, color: '#ddd', fontSize: '0.78rem', lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>{m.content}</div>
+                      <div style={{ maxWidth: '85%', padding: '8px 12px', borderRadius: 12, background: m.role === 'user' ? (chatMode === 'cerebro' ? 'rgba(245,245,245,0.08)' : 'rgba(16,185,129,0.12)') : 'rgba(255,255,255,0.04)', border: `1px solid ${m.role === 'user' ? (chatMode === 'cerebro' ? '#F5F5F530' : '#10B98130') : 'rgba(255,255,255,0.06)'}`, color: '#ddd', fontSize: '0.78rem', lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>{m.content}</div>
                     </div>
                   ))}
-                  {chatLoading && <div style={{ display: 'flex', gap: 3 }}>{[0,1,2].map(i => <motion.div key={i} animate={{ opacity: [0.3,1,0.3] }} transition={{ duration: 1, repeat: Infinity, delay: i*0.2 }} style={{ width: 5, height: 5, borderRadius: '50%', background: chatMode === 'cerebro' ? '#FF6B00' : '#10B981' }} />)}</div>}
+                  {chatLoading && <div style={{ display: 'flex', gap: 3 }}>{[0,1,2].map(i => <motion.div key={i} animate={{ opacity: [0.3,1,0.3] }} transition={{ duration: 1, repeat: Infinity, delay: i*0.2 }} style={{ width: 5, height: 5, borderRadius: '50%', background: chatMode === 'cerebro' ? '#F5F5F5' : '#10B981' }} />)}</div>}
                   <div ref={chatEndRef} />
                 </div>
                 <div style={{ padding: '10px 12px', borderTop: '1px solid #1F1F1F', display: 'flex', gap: 6 }}>
                   <input value={chatInput} onChange={e => setChatInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSend()}
                     placeholder={chatMode === 'cerebro' ? 'Cerebro...' : 'DevOps...'} style={{ flex: 1, background: 'rgba(255,255,255,0.04)', border: '1px solid #333', borderRadius: 10, color: '#fff', padding: '9px 12px', fontSize: '0.8rem', outline: 'none' }} />
-                  <button onClick={handleSend} disabled={chatLoading} style={{ background: chatMode === 'cerebro' ? 'linear-gradient(135deg, #FF6B00, #FFB800)' : 'linear-gradient(135deg, #10B981, #059669)', border: 'none', borderRadius: 10, width: 38, height: 38, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <button onClick={handleSend} disabled={chatLoading} style={{ background: chatMode === 'cerebro' ? '#F5F5F5' : 'linear-gradient(135deg, #10B981, #059669)', border: 'none', borderRadius: 10, width: 38, height: 38, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                     <Send size={14} color="#000" />
                   </button>
                 </div>
@@ -413,7 +413,7 @@ export default function EnjambreHome({ onNavigate, events, connected, user }) {
         {!chatOpen && (
           <motion.button initial={{ scale: 0 }} animate={{ scale: 1 }} transition={{ delay: 0.6, type: 'spring' }}
             whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }} onClick={() => setChatOpen(true)}
-            style={{ position: 'fixed', bottom: 24, right: 24, width: 52, height: 52, borderRadius: 16, background: chatMode === 'cerebro' ? 'linear-gradient(135deg, #FF6B00, #FFB800)' : 'linear-gradient(135deg, #10B981, #059669)', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: `0 8px 28px ${chatMode === 'cerebro' ? 'rgba(255,107,0,0.3)' : 'rgba(16,185,129,0.3)'}`, zIndex: 999 }}>
+            style={{ position: 'fixed', bottom: 24, right: 24, width: 52, height: 52, borderRadius: 16, background: chatMode === 'cerebro' ? '#F5F5F5' : 'linear-gradient(135deg, #10B981, #059669)', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: `0 8px 28px ${chatMode === 'cerebro' ? 'rgba(245,245,245,0.15)' : 'rgba(16,185,129,0.3)'}`, zIndex: 999 }}>
             {chatMode === 'cerebro' ? <Brain size={22} color="#000" /> : <Code2 size={22} color="#000" />}
           </motion.button>
         )}

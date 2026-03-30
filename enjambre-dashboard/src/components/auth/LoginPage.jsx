@@ -72,7 +72,7 @@ export default function LoginPage({ onLogin }) {
         <div style={{ textAlign: 'center', marginBottom: 36 }}>
           <div style={{
             width: 72, height: 72, margin: '0 auto 20px',
-            background: 'linear-gradient(135deg, #FF6B00, #FFB800)',
+            background: '#F5F5F5',
             borderRadius: 18,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             boxShadow: '0 8px 32px rgba(255,107,0,0.2)',
@@ -84,7 +84,7 @@ export default function LoginPage({ onLogin }) {
             letterSpacing: 4, margin: 0,
           }}>
             <span style={{
-              background: 'linear-gradient(135deg, #FF6B00, #FFB800)',
+              background: '#F5F5F5',
               WebkitBackgroundClip: 'text',
               WebkitTextFillColor: 'transparent',
             }}>BLACKWOLF</span>
@@ -125,7 +125,7 @@ export default function LoginPage({ onLogin }) {
                 outline: 'none', boxSizing: 'border-box',
                 transition: 'border-color 0.15s',
               }}
-              onFocus={(e) => e.target.style.borderColor = '#FF6B00'}
+              onFocus={(e) => e.target.style.borderColor = '#F5F5F5'}
               onBlur={(e) => e.target.style.borderColor = '#1F1F1F'}
               placeholder="admin@blackwolfsec.io"
             />
@@ -154,7 +154,7 @@ export default function LoginPage({ onLogin }) {
                   outline: 'none', boxSizing: 'border-box',
                   transition: 'border-color 0.15s',
                 }}
-                onFocus={(e) => e.target.style.borderColor = '#FF6B00'}
+                onFocus={(e) => e.target.style.borderColor = '#F5F5F5'}
                 onBlur={(e) => e.target.style.borderColor = '#1F1F1F'}
                 placeholder="••••••••••"
               />
@@ -188,7 +188,7 @@ export default function LoginPage({ onLogin }) {
             disabled={loading}
             style={{
               width: '100%', padding: 14,
-              background: loading ? '#1F1F1F' : 'linear-gradient(135deg, #FF6B00, #FFB800)',
+              background: loading ? '#1F1F1F' : '#F5F5F5',
               border: 'none', borderRadius: 100,
               color: loading ? '#555' : '#000',
               fontSize: '0.9rem', fontWeight: 700,

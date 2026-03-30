@@ -64,8 +64,8 @@ const ROOMS = [
   { id: 'forms',      x: 736, y: 16,  w: 200, h: 200, label: 'FORMS',           border: '#A855F7', doorX: 836, doorSide: 'bottom' },
   { id: 'prospector', x: 952, y: 16,  w: 232, h: 200, label: 'PROSPECTOR',      border: '#EC4899', doorX: 1068, doorSide: 'bottom' },
   { id: 'comms',      x: 16,  y: 232, w: 280, h: 200, label: 'DISCORD / COMMS', border: '#5865F2', doorX: 156, doorSide: 'bottom' },
-  { id: 'pizarra',    x: 312, y: 232, w: 480, h: 200, label: 'SALA DE REUNIONES',border: '#FF6B00', doorX: 552, doorSide: 'bottom' },
-  { id: 'cerebro',    x: 808, y: 232, w: 376, h: 200, label: 'SALA DEL CEREBRO', border: '#FF6B00', doorX: 996, doorSide: 'bottom' },
+  { id: 'pizarra',    x: 312, y: 232, w: 480, h: 200, label: 'SALA DE REUNIONES',border: '#F5F5F5', doorX: 552, doorSide: 'bottom' },
+  { id: 'cerebro',    x: 808, y: 232, w: 376, h: 200, label: 'SALA DEL CEREBRO', border: '#F5F5F5', doorX: 996, doorSide: 'bottom' },
   { id: 'dcc',        x: 16,  y: 448, w: 288, h: 200, label: 'DCC / LANDING',   border: '#F59E0B', doorX: 160, doorSide: 'top' },
   { id: 'email',      x: 320, y: 448, w: 288, h: 200, label: 'EMAIL MKT',       border: '#F97316', doorX: 464, doorSide: 'top' },
   { id: 'developer',  x: 624, y: 448, w: 280, h: 200, label: 'DEV AGENT',       border: '#10B981', doorX: 764, doorSide: 'top' },
@@ -306,7 +306,7 @@ function drawFurniture(ctx, f, time) {
       ctx.fillStyle = on ? '#22C55E' : '#0A0A0A';
       ctx.fillRect(f.x + f.w - 8, f.y + 6 + i * 13, 3, 3);
       const on2 = Math.sin(time / 400 + i * 2 + f.x) > 0.3;
-      ctx.fillStyle = on2 ? '#FF6B00' : '#0A0A0A';
+      ctx.fillStyle = on2 ? '#F5F5F5' : '#0A0A0A';
       ctx.fillRect(f.x + f.w - 12, f.y + 6 + i * 13, 3, 3);
     }
   }
@@ -340,7 +340,7 @@ function drawFurniture(ctx, f, time) {
     const h3 = 16 + Math.sin(time / 1800 + 2) * 5;
     ctx.fillStyle = '#22C55E'; ctx.fillRect(f.x + 5, f.y + f.h - h1, 8, h1);
     ctx.fillStyle = '#3B82F6'; ctx.fillRect(f.x + 16, f.y + f.h - h2, 8, h2);
-    ctx.fillStyle = '#FF6B00'; ctx.fillRect(f.x + 27, f.y + f.h - h3, 8, h3);
+    ctx.fillStyle = '#F5F5F5'; ctx.fillRect(f.x + 27, f.y + f.h - h3, 8, h3);
   }
 }
 
@@ -378,7 +378,7 @@ function drawHallway(ctx) {
 // AGENT DEFINITIONS
 // ============================================
 const AGENT_DEFS = [
-  { id: 'cerebro', name: 'CEREBRO', homeRoom: 'cerebro', hair: '#FF6B00', shirt: '#FF6B00', pants: '#8B4000', shoes: '#4A2800',
+  { id: 'cerebro', name: 'CEREBRO', homeRoom: 'cerebro', hair: '#F5F5F5', shirt: '#F5F5F5', pants: '#8B4000', shoes: '#4A2800',
     thoughts: ['Orquestando...', 'Correlaciones...', 'Decision tree...', 'Coordinando...', 'Tool chain...'] },
   { id: 'ciber', name: 'CIBER', homeRoom: 'soc', hair: '#222', shirt: '#EF4444', pants: '#7F1D1D', shoes: '#450A0A',
     thoughts: ['Trafico red...', 'IPs sospechosas...', 'Suricata...', 'Amenazas...', 'Puertos...'] },
@@ -466,7 +466,7 @@ export default function OfficeWorld() {
       if (t === 'tool.executed') a.say(`${ev.payload?.tool || '?'}`, 3000);
       if (t === 'sale.closed') { const o = F('ops'); if (o) { o.say('Comision!', 4000); o.moveTo('pizarra'); linesRef.current.push(new InteractionLine('crm', 'ops', 'Venta', '#22C55E')); } }
       if (t === 'chat.discord') { const d = F('discord'); if (d) { d.say('Discord msg', 3000); d.moveTo('cerebro'); linesRef.current.push(new InteractionLine('discord', 'cerebro', 'Chat', '#5865F2')); } }
-      if (t.startsWith('agent.')) { a.say(t.replace('agent.', ''), 3000); a.moveTo('pizarra'); linesRef.current.push(new InteractionLine(s, 'cerebro', t.replace('agent.', ''), '#FF6B00')); }
+      if (t.startsWith('agent.')) { a.say(t.replace('agent.', ''), 3000); a.moveTo('pizarra'); linesRef.current.push(new InteractionLine(s, 'cerebro', t.replace('agent.', ''), '#F5F5F5')); }
     });
   }, [events]);
 
@@ -475,7 +475,7 @@ export default function OfficeWorld() {
       if (isPaused) return;
       const A = agentsRef.current, F = id => A.find(a => a.id === id);
       if (Math.random() < 0.02) F('dcc').say('Polling...', 2000);
-      if (Math.random() < 0.015) { const c = F('cerebro'), t = A[Math.floor(Math.random() * A.length)]; if (t.id !== 'cerebro') { c.say(`Query ${t.name}`, 2500); linesRef.current.push(new InteractionLine('cerebro', t.id, 'query', '#FF6B00')); t.actionQueue.push(() => t.say('OK', 2000)); } }
+      if (Math.random() < 0.015) { const c = F('cerebro'), t = A[Math.floor(Math.random() * A.length)]; if (t.id !== 'cerebro') { c.say(`Query ${t.name}`, 2500); linesRef.current.push(new InteractionLine('cerebro', t.id, 'query', '#F5F5F5')); t.actionQueue.push(() => t.say('OK', 2000)); } }
       if (Math.random() < 0.01) { F('prospector').say('Buscando...', 3000); F('prospector').moveTo('prospector'); }
       if (Math.random() < 0.02) { const a = A[Math.floor(Math.random() * A.length)]; if (a.currentRoom !== a.homeRoom) a.moveTo(a.homeRoom); }
       if (Math.random() < 0.025) { const m = ['[SYS] Heartbeat OK', '[CEREBRO] OK', '[DCC] Sync 0', '[DISCORD] On']; pizarraRef.current.unshift({ text: m[Math.floor(Math.random() * m.length)], time: Date.now() }); if (pizarraRef.current.length > 10) pizarraRef.current.pop(); }
@@ -567,9 +567,9 @@ export default function OfficeWorld() {
 
       // Cerebro brain
       const cr = ROOMS.find(r => r.id === 'cerebro');
-      ctx.fillStyle = Math.sin(now / 400) > 0 ? '#FF6B00' : '#CC5500';
+      ctx.fillStyle = Math.sin(now / 400) > 0 ? '#F5F5F5' : '#CC5500';
       ctx.font = '20px serif'; ctx.textAlign = 'center'; ctx.fillText('🧠', cr.x + cr.w / 2, cr.y + 55);
-      ctx.fillStyle = '#FF6B00'; ctx.font = 'bold 7px "JetBrains Mono", monospace'; ctx.fillText('CLAUDE ORCHESTRATOR', cr.x + cr.w / 2, cr.y + 68);
+      ctx.fillStyle = '#F5F5F5'; ctx.font = 'bold 7px "JetBrains Mono", monospace'; ctx.fillText('CLAUDE ORCHESTRATOR', cr.x + cr.w / 2, cr.y + 68);
 
       // Status bar
       ctx.fillStyle = '#080808'; ctx.fillRect(0, CANVAS_H - 18, CANVAS_W, 18);
@@ -595,7 +595,7 @@ export default function OfficeWorld() {
     if (type === 'lead') { F('forms').say('Lead!', 4000); F('forms').moveTo('pizarra'); setTimeout(() => { F('crm').moveTo('pizarra'); F('crm').say('Setter asignado', 3000); linesRef.current.push(new InteractionLine('forms', 'crm', 'Lead', '#A855F7')); }, 1500); }
     if (type === 'threat') { F('ciber').say('Brute Force!', 5000); F('ciber').moveTo('cerebro'); linesRef.current.push(new InteractionLine('ciber', 'cerebro', 'THREAT', '#EF4444')); setTimeout(() => { F('ops').moveTo('cerebro'); F('ops').say('Audit...', 3000); }, 2000); }
     if (type === 'sale') { F('crm').say('$2,400!', 4000); F('crm').moveTo('pizarra'); setTimeout(() => { F('ops').moveTo('pizarra'); F('ops').say('$360', 3000); linesRef.current.push(new InteractionLine('crm', 'ops', '$2.4K', '#22C55E')); }, 1500); }
-    if (type === 'sync') { A.forEach(a => { a.moveTo('cerebro'); a.say('Sync', 3000); }); A.forEach((a, i) => { if (a.id !== 'cerebro') setTimeout(() => linesRef.current.push(new InteractionLine('cerebro', a.id, 'sync', '#FF6B00')), i * 200); }); }
+    if (type === 'sync') { A.forEach(a => { a.moveTo('cerebro'); a.say('Sync', 3000); }); A.forEach((a, i) => { if (a.id !== 'cerebro') setTimeout(() => linesRef.current.push(new InteractionLine('cerebro', a.id, 'sync', '#F5F5F5')), i * 200); }); }
   }
 
   const sel = agentsRef.current.find(a => a.id === selectedAgent);
@@ -612,7 +612,7 @@ export default function OfficeWorld() {
           <button onClick={() => test('lead')} className="btn-secondary" style={{ padding: '4px 10px', fontSize: '0.7rem', borderColor: '#A855F7', color: '#A855F7' }}>Lead</button>
           <button onClick={() => test('threat')} className="btn-secondary" style={{ padding: '4px 10px', fontSize: '0.7rem', borderColor: '#EF4444', color: '#EF4444' }}>Amenaza</button>
           <button onClick={() => test('sale')} className="btn-secondary" style={{ padding: '4px 10px', fontSize: '0.7rem', borderColor: '#22C55E', color: '#22C55E' }}>Venta</button>
-          <button onClick={() => test('sync')} className="btn-secondary" style={{ padding: '4px 10px', fontSize: '0.7rem', borderColor: '#FF6B00', color: '#FF6B00' }}>Sync</button>
+          <button onClick={() => test('sync')} className="btn-secondary" style={{ padding: '4px 10px', fontSize: '0.7rem', borderColor: '#F5F5F5', color: '#F5F5F5' }}>Sync</button>
         </div>
       </div>
       <div style={{ borderRadius: 8, overflow: 'hidden', border: '1px solid rgba(255,255,255,0.06)' }}>

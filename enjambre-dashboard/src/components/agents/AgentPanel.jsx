@@ -12,7 +12,7 @@ const AGENTS = [
     label: 'CEREBRO',
     subtitle: 'Orquestador IA',
     description: 'Cerebro central del Enjambre. Orquesta todos los agentes usando Claude, toma decisiones autonomas y coordina acciones entre sistemas.',
-    color: '#FF6B00',
+    color: '#F5F5F5',
     tools: ['Orquestacion multi-agente', 'Toma de decisiones', 'Correlacion de datos', 'Auto-trigger por eventos'],
     alwaysOnline: true,
   },

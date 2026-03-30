@@ -314,7 +314,7 @@ export default function DevAgent({ events = [] }) {
                         marginLeft: 'auto', padding: '2px 8px', borderRadius: 100,
                         fontSize: '0.65rem', fontWeight: 700,
                         background: ticket.project === 'enjambre' ? 'rgba(255,107,0,0.12)' : ticket.project === 'soc' ? 'rgba(239,68,68,0.12)' : 'rgba(59,130,246,0.12)',
-                        color: ticket.project === 'enjambre' ? '#FF6B00' : ticket.project === 'soc' ? '#EF4444' : '#3B82F6',
+                        color: ticket.project === 'enjambre' ? '#F5F5F5' : ticket.project === 'soc' ? '#EF4444' : '#3B82F6',
                       }}>
                         {ticket.project || 'general'}
                       </span>
