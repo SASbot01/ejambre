@@ -1,28 +1,13 @@
-import Redis from 'ioredis';
 import { query } from '../config/database.js';
-
-const CHANNEL = 'enjambre:events';
 
 class EventBus {
   constructor() {
-    this.pub = null;
-    this.sub = null;
     this.handlers = new Map();
     this.sseClients = new Set();
   }
 
   async connect() {
-    const url = process.env.REDIS_URL || 'redis://localhost:6379';
-    this.pub = new Redis(url);
-    this.sub = new Redis(url);
-
-    this.sub.subscribe(CHANNEL);
-    this.sub.on('message', (channel, message) => {
-      if (channel !== CHANNEL) return;
-      const event = JSON.parse(message);
-      this._dispatch(event);
-      this._broadcastSSE(event);
-    });
+    // In-process event bus — no external dependencies needed
   }
 
   async publish(eventType, sourceAgent, payload, correlationId = null) {
@@ -41,8 +26,8 @@ class EventBus {
       [eventType, sourceAgent, JSON.stringify(payload), correlationId]
     );
 
-    // Publicar en Redis
-    await this.pub.publish(CHANNEL, JSON.stringify(event));
+    this._dispatch(event);
+    this._broadcastSSE(event);
     return event;
   }
 
@@ -75,8 +60,7 @@ class EventBus {
   }
 
   async disconnect() {
-    if (this.sub) await this.sub.quit();
-    if (this.pub) await this.pub.quit();
+    // Nothing to close — in-process
   }
 }
 

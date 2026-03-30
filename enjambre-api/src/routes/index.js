@@ -4,12 +4,13 @@ import { query, queryOne } from '../config/database.js';
 import { v4 as uuid } from 'uuid';
 import { authenticate } from '../auth/auth.js';
 import { startDevSession } from '../agents/dev-worker.js';
+import { enrollLead } from '../workers/sequence-worker.js';
 
 export function registerRoutes(app) {
   // ============================================
   // HEALTH CHECK
   // ============================================
-  app.get('/health', async () => {
+  app.get('/api/health', async () => {
     return { status: 'ok', service: 'enjambre-cerebro', timestamp: new Date().toISOString() };
   });
 
@@ -237,21 +238,14 @@ export function registerRoutes(app) {
 
   // ============================================
   // WEBHOOK CENTRAL (Dashboard-Ops → Enjambre)
-  // Recibe logs de agentes de central.blackwolfsec.io
+  // Recibe eventos de central: prospector, email, CRM changes
+  // Crea leads enriquecidos y enrolla en secuencias automáticas
   // ============================================
   app.post('/api/webhooks/central', async (req) => {
     const data = req.body;
-
-    // Map Central event to Enjambre event
     const event = data.event || data.type || 'central.unknown';
     const source = data.source || 'central';
-    const payload = {
-      action: data.action || null,
-      data: data.data || data.payload || {},
-      client_id: data.client_id || null,
-      contact_id: data.contact_id || null,
-      original_event: event,
-    };
+    const contactData = data.data || data.payload || {};
 
     // Map source agent names from Central
     const agentMap = {
@@ -261,10 +255,112 @@ export function registerRoutes(app) {
       analytics: 'ops',
       email: 'prospector',
     };
-
     const sourceAgent = agentMap[source] || source;
 
-    await eventBus.publish(event, sourceAgent, payload);
+    // ── LEAD FOUND: Prospector created a CRM contact → create enriched lead + auto-enroll
+    if (event === 'agent.lead_found' && contactData.contactId) {
+      try {
+        // Check if lead already exists for this contact
+        const existing = await queryOne(
+          'SELECT id FROM leads WHERE metadata->>\'crm_contact_id\' = $1',
+          [contactData.contactId]
+        );
+
+        if (!existing) {
+          // Fetch full contact from Supabase via Dashboard-Ops data
+          const company = contactData.company || '';
+          const country = contactData.country || '';
+
+          const lead = await queryOne(
+            `INSERT INTO leads (nombre, email, telefono, producto, landing_source, status, utm_source, metadata)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+             RETURNING *`,
+            [
+              company,
+              contactData.email || null,
+              contactData.phone || null,
+              contactData.product || null,
+              'prospector-agent',
+              'nuevo',
+              'dashboard-ops',
+              JSON.stringify({
+                crm_contact_id: contactData.contactId,
+                client_id: data.client_id || null,
+                company,
+                country,
+                ceo_name: contactData.ceo_name || null,
+                ceo_email: contactData.ceo_email || null,
+                ceo_linkedin: contactData.ceo_linkedin || null,
+                enriched: true,
+                source_agent: sourceAgent,
+              }),
+            ]
+          );
+
+          // Auto-enroll in follow-up sequence
+          if (lead) {
+            await enrollLead(lead.id);
+            console.log(`[Central] Lead created from Prospector: ${company} → enrolled in sequences`);
+          }
+
+          await eventBus.publish('lead.created', sourceAgent, {
+            lead_id: lead?.id,
+            email: contactData.email,
+            company,
+            source: 'prospector',
+            crm_contact_id: contactData.contactId,
+          });
+
+          return { ok: true, event, lead_id: lead?.id, enrolled: true };
+        } else {
+          return { ok: true, event, lead_id: existing.id, enrolled: false, reason: 'duplicate' };
+        }
+      } catch (err) {
+        console.error('[Central] Error creating lead from Prospector:', err.message);
+        // Still publish the event even if lead creation fails
+        await eventBus.publish(event, sourceAgent, { ...contactData, error: err.message });
+        return { ok: true, event, error: err.message };
+      }
+    }
+
+    // ── EMAIL CAMPAIGN SENT: track which leads received emails
+    if (event === 'email.campaign_sent') {
+      await eventBus.publish(event, 'prospector', contactData);
+      return { ok: true, event };
+    }
+
+    // ── CRM STATUS CHANGED: update lead status in Enjambre
+    if (event === 'crm.status_changed' && contactData.contactId) {
+      try {
+        const statusMap = {
+          contacted: 'contactado',
+          qualified: 'calificado',
+          won: 'ganado',
+          lost: 'perdido',
+          proposal: 'calificado',
+          negotiation: 'calificado',
+        };
+        const newStatus = statusMap[contactData.newStatus] || contactData.newStatus;
+
+        await query(
+          `UPDATE leads SET status = $1 WHERE metadata->>'crm_contact_id' = $2`,
+          [newStatus, contactData.contactId]
+        );
+        console.log(`[Central] Lead status updated: ${contactData.contactId} → ${newStatus}`);
+      } catch (err) {
+        console.error('[Central] Error updating lead status:', err.message);
+      }
+      await eventBus.publish(event, sourceAgent, contactData);
+      return { ok: true, event };
+    }
+
+    // ── Generic event passthrough
+    await eventBus.publish(event, sourceAgent, {
+      action: data.action || null,
+      data: contactData,
+      client_id: data.client_id || null,
+      contact_id: data.contact_id || null,
+    });
 
     return { ok: true, event, source: sourceAgent };
   });
@@ -359,11 +455,38 @@ export function registerRoutes(app) {
   });
 
   // ============================================
+  // SEQUENCES
+  // ============================================
+  app.get('/api/sequences', async () => {
+    return query('SELECT * FROM sequences ORDER BY created_at DESC');
+  });
+
+  app.get('/api/sequences/enrollments', async (req) => {
+    const { status = 'active', limit = 50 } = req.query;
+    return query(
+      `SELECT se.*, s.name as sequence_name, l.nombre, l.email, l.telefono, l.producto
+       FROM sequence_enrollments se
+       JOIN sequences s ON s.id = se.sequence_id
+       JOIN leads l ON l.id = se.lead_id
+       WHERE se.status = $1
+       ORDER BY se.next_fire_at ASC
+       LIMIT $2`,
+      [status, Number(limit)]
+    );
+  });
+
+  app.post('/api/sequences/:leadId/enroll', async (req) => {
+    await enrollLead(req.params.leadId);
+    return { ok: true };
+  });
+
+  // ============================================
   // SETUP: escuchar eventos automáticos
   // ============================================
   eventBus.on('lead.created', async (event) => {
     try {
       await orchestrator.processEvent(event);
+      await enrollLead(event.payload?.lead_id);
     } catch (err) {
       console.error('Error procesando lead.created:', err.message);
     }

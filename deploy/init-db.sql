@@ -80,6 +80,52 @@ CREATE TABLE IF NOT EXISTS setters (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- Dev Agent: Tickets de desarrollo
+CREATE TABLE IF NOT EXISTS dev_tickets (
+    id BIGSERIAL PRIMARY KEY,
+    title VARCHAR(500) NOT NULL,
+    description TEXT,
+    project VARCHAR(100) DEFAULT 'general',
+    status VARCHAR(50) DEFAULT 'pending',
+    result TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Dev Agent: Sesiones autónomas
+CREATE TABLE IF NOT EXISTS dev_sessions (
+    id BIGSERIAL PRIMARY KEY,
+    duration_hours INT DEFAULT 2,
+    status VARCHAR(50) DEFAULT 'active',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Secuencias de follow-up automático
+CREATE TABLE IF NOT EXISTS sequences (
+    id BIGSERIAL PRIMARY KEY,
+    name VARCHAR(200) NOT NULL,
+    trigger_status VARCHAR(50) DEFAULT 'nuevo',
+    product_filter VARCHAR(100),
+    steps JSONB NOT NULL DEFAULT '[]',
+    active BOOLEAN DEFAULT true,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS sequence_enrollments (
+    id BIGSERIAL PRIMARY KEY,
+    lead_id UUID REFERENCES leads(id),
+    sequence_id BIGINT REFERENCES sequences(id),
+    current_step INT DEFAULT 0,
+    status VARCHAR(50) DEFAULT 'active',
+    next_fire_at TIMESTAMPTZ,
+    last_response_at TIMESTAMPTZ,
+    metadata JSONB DEFAULT '{}',
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_sequence_enrollments_status ON sequence_enrollments(status);
+CREATE INDEX idx_sequence_enrollments_next_fire ON sequence_enrollments(next_fire_at);
+
 -- Configuración de formularios por landing
 CREATE TABLE IF NOT EXISTS form_configs (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

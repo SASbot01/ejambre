@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { sendChat } from '../../services/api.js';
-import { Send, Bot, User } from 'lucide-react';
+import { Send, Bot, Zap } from 'lucide-react';
 
 const QUICK_ACTIONS = [
   'Resumen general del enjambre',
@@ -14,7 +14,7 @@ export default function ChatPanel() {
   const [messages, setMessages] = useState([
     {
       role: 'assistant',
-      content: 'Cerebro del Enjambre activo. Tengo acceso a los agentes CIBER, CRM y OPS. ¿Qué necesitas?',
+      content: 'Cerebro del Enjambre activo. Tengo acceso a los agentes CIBER, CRM y OPS. Que necesitas?',
     },
   ]);
   const [input, setInput] = useState('');
@@ -65,9 +65,13 @@ export default function ChatPanel() {
     <div className="chat-panel">
       <div className="event-stream-header">
         <div className="card-title">
-          <Bot size={14} style={{ display: 'inline', marginRight: 8 }} />
+          <Bot size={14} />
           Cerebro del Enjambre
         </div>
+        <div style={{
+          width: 8, height: 8, borderRadius: '50%',
+          background: 'var(--success)', animation: 'pulse 2s infinite',
+        }} />
       </div>
 
       <div className="chat-messages">
@@ -75,35 +79,37 @@ export default function ChatPanel() {
           <div key={i} className={`chat-msg ${msg.role}`}>
             {msg.content}
             {msg.actions?.length > 0 && (
-              <div style={{ marginTop: 8, fontSize: 11, opacity: 0.7 }}>
-                Agentes: {msg.agents?.join(', ')} | {msg.actions.length} acciones ejecutadas
+              <div className="chat-msg-meta">
+                {msg.agents?.map((a) => (
+                  <span key={a} className="meta-badge">{a}</span>
+                ))}
+                <span>
+                  <Zap size={10} style={{ display: 'inline', verticalAlign: 'middle' }} />
+                  {' '}{msg.actions.length} acciones
+                </span>
               </div>
             )}
           </div>
         ))}
         {loading && (
           <div className="chat-msg assistant">
-            <span className="loading-dots">Procesando</span>
+            <div className="typing-indicator">
+              <div className="dot" />
+              <div className="dot" />
+              <div className="dot" />
+            </div>
           </div>
         )}
         <div ref={messagesEndRef} />
       </div>
 
       {messages.length <= 1 && (
-        <div style={{ padding: '0 16px 8px', display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+        <div className="chat-quick-actions">
           {QUICK_ACTIONS.map((action) => (
             <button
               key={action}
+              className="quick-action-btn"
               onClick={() => { setInput(action); }}
-              style={{
-                background: 'var(--bg-primary)',
-                border: '1px solid var(--border)',
-                borderRadius: 20,
-                padding: '6px 12px',
-                color: 'var(--text-secondary)',
-                fontSize: 12,
-                cursor: 'pointer',
-              }}
             >
               {action}
             </button>

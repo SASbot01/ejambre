@@ -181,6 +181,30 @@ export const crmTools = [
     },
   },
   {
+    name: 'crm_get_leads_stats',
+    description: 'Estadísticas y conteo de leads locales (formularios/infoproductos). Muestra total, por estado, por landing_source (ej: detrasdecamara), hoy y esta semana. Usa SIEMPRE esta herramienta cuando pregunten cuántos leads hay.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        landing_source: { type: 'string', description: 'Filtrar por fuente: detrasdecamara, etc. Vacío = todas' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'crm_list_all_leads',
+    description: 'Lista TODOS los leads locales con nombre, email, teléfono, estado y fuente. Usa esta herramienta para ver el detalle de los leads.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        landing_source: { type: 'string', description: 'Filtrar por fuente: detrasdecamara, etc.' },
+        status: { type: 'string', description: 'Filtrar por estado: nuevo, contactado, calificado, etc.' },
+        limit: { type: 'number', description: 'Límite de resultados (default 50)' },
+      },
+      required: [],
+    },
+  },
+  {
     name: 'crm_find_contacts_by_email',
     description: 'Busca contactos por email exacto en ambos sistemas (Supabase CRM + leads locales). Útil para cruzar datos.',
     input_schema: {
@@ -279,6 +303,60 @@ export const crmHandlers = {
 
     return query(
       `SELECT * FROM leads WHERE ${conditions.join(' AND ')} ORDER BY created_at DESC LIMIT 50`,
+      params
+    );
+  },
+
+  async crm_get_leads_stats({ landing_source } = {}) {
+    let whereClause = '';
+    const params = [];
+
+    if (landing_source) {
+      params.push(landing_source);
+      whereClause = `WHERE landing_source = $1`;
+    }
+
+    const stats = await query(
+      `SELECT
+         COUNT(*) as total,
+         COUNT(*) FILTER (WHERE status = 'nuevo') as nuevos,
+         COUNT(*) FILTER (WHERE status = 'contactado') as contactados,
+         COUNT(*) FILTER (WHERE status = 'calificado') as calificados,
+         COUNT(*) FILTER (WHERE status = 'ganado') as ganados,
+         COUNT(*) FILTER (WHERE status = 'perdido') as perdidos,
+         COUNT(*) FILTER (WHERE created_at >= CURRENT_DATE) as hoy,
+         COUNT(*) FILTER (WHERE created_at >= DATE_TRUNC('week', CURRENT_DATE)) as esta_semana
+       FROM leads ${whereClause}`,
+      params
+    );
+
+    const bySource = await query(
+      `SELECT landing_source, COUNT(*) as total FROM leads ${whereClause} GROUP BY landing_source ORDER BY total DESC`,
+      params
+    );
+
+    return { ...stats[0], por_fuente: bySource };
+  },
+
+  async crm_list_all_leads({ landing_source, status, limit = 50 } = {}) {
+    const conditions = [];
+    const params = [];
+
+    if (landing_source) {
+      params.push(landing_source);
+      conditions.push(`landing_source = $${params.length}`);
+    }
+    if (status) {
+      params.push(status);
+      conditions.push(`status = $${params.length}`);
+    }
+
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+    params.push(Number(limit));
+
+    return query(
+      `SELECT id, nombre, email, telefono, producto, landing_source, status, created_at
+       FROM leads ${where} ORDER BY created_at DESC LIMIT $${params.length}`,
       params
     );
   },

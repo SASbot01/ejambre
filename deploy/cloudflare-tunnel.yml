@@ -7,29 +7,26 @@
 # Pasos:
 #   1. cloudflared tunnel create enjambre
 #   2. Copia el TUNNEL_ID
-#   3. cloudflared tunnel route dns enjambre comando.tudominio.com
-#   4. cloudflared tunnel route dns enjambre api.tudominio.com
-#   5. cloudflared tunnel route dns enjambre forms.tudominio.com
-#   6. cloudflared tunnel route dns enjambre soc.tudominio.com
+#   3. cloudflared tunnel route dns enjambre comando.blackwolfsec.io
+#   4. cloudflared tunnel route dns enjambre api-enjambre.blackwolfsec.io
+#   5. cloudflared tunnel route dns enjambre forms.blackwolfsec.io
+#   6. cloudflared tunnel route dns enjambre soc.blackwolfsec.io
 #   7. cloudflared tunnel run enjambre
 
 tunnel: TUNNEL_ID
 credentials-file: /root/.cloudflared/TUNNEL_ID.json
 
 ingress:
-  - hostname: comando.tudominio.com
+  - hostname: comando.blackwolfsec.io
     service: http://localhost:80
 
-  - hostname: api.tudominio.com
+  - hostname: api-enjambre.blackwolfsec.io
     service: http://localhost:80
 
-  - hostname: forms.tudominio.com
+  - hostname: forms.blackwolfsec.io
     service: http://localhost:80
 
-  - hostname: soc.tudominio.com
-    service: http://localhost:80
-
-  - hostname: ventas.tudominio.com
+  - hostname: soc.blackwolfsec.io
     service: http://localhost:80
 
   # Catch-all (requerido por Cloudflare)

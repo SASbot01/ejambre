@@ -1,13 +1,25 @@
 const API_BASE = '/api';
 
+function getToken() {
+  return localStorage.getItem('enjambre_token');
+}
+
 async function request(path, options = {}) {
+  const token = getToken();
   const res = await fetch(`${API_BASE}${path}`, {
     ...options,
     headers: {
       'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...options.headers,
     },
   });
+  if (res.status === 401) {
+    localStorage.removeItem('enjambre_token');
+    localStorage.removeItem('enjambre_user');
+    window.location.reload();
+    throw new Error('Sesión expirada');
+  }
   if (!res.ok) throw new Error(`API ${res.status}: ${await res.text()}`);
   return res.json();
 }
@@ -22,7 +34,8 @@ export async function sendChat(message, sessionId = 'dashboard') {
 
 // Eventos
 export function subscribeEvents(onEvent) {
-  const es = new EventSource(`${API_BASE}/events/stream`);
+  const token = getToken();
+  const es = new EventSource(`${API_BASE}/events/stream${token ? `?token=${token}` : ''}`);
   es.onmessage = (e) => {
     try {
       onEvent(JSON.parse(e.data));
@@ -62,4 +75,11 @@ export async function getDecisions(limit = 20) {
 // Health
 export async function getHealth() {
   return request('/health');
+}
+
+// Logout
+export function logout() {
+  localStorage.removeItem('enjambre_token');
+  localStorage.removeItem('enjambre_user');
+  window.location.reload();
 }

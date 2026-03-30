@@ -1,5 +1,5 @@
 import React from 'react';
-import { Activity } from 'lucide-react';
+import { Activity, Zap } from 'lucide-react';
 
 function formatTime(ts) {
   const d = new Date(ts);
@@ -30,13 +30,19 @@ export default function EventStream({ events }) {
     <div className="event-stream">
       <div className="event-stream-header">
         <div className="card-title">
-          <Activity size={14} style={{ display: 'inline', marginRight: 8 }} />
+          <Activity size={14} />
           Pizarra en Tiempo Real
         </div>
-        <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{events.length} eventos</span>
+        <div className="header-pill" style={{ padding: '4px 10px' }}>
+          <Zap size={10} />
+          <span>{events.length}</span>
+        </div>
       </div>
       {events.length === 0 && (
-        <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}>
+        <div className="event-empty">
+          <div className="empty-icon">
+            <Activity size={32} style={{ opacity: 0.2 }} />
+          </div>
           Esperando eventos del enjambre...
         </div>
       )}

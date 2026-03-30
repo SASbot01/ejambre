@@ -1,8 +1,3 @@
-// ============================================
-// CEREBRO DEL ENJAMBRE
-// Claude Orchestrator con Tool Use
-// ============================================
-
 import Anthropic from '@anthropic-ai/sdk';
 import { ciberTools, ciberHandlers } from '../tools/ciber-tools.js';
 import { crmTools, crmHandlers } from '../tools/crm-tools.js';
@@ -46,114 +41,119 @@ export class Orchestrator {
   }
 
   async process(input, sessionId = 'default') {
-    // Obtener o crear historial de conversación
-    if (!this.conversations.has(sessionId)) {
-      this.conversations.set(sessionId, []);
-    }
-    const messages = this.conversations.get(sessionId);
+    try {
+      // Obtener o crear historial de conversación
+      if (!this.conversations.has(sessionId)) {
+        this.conversations.set(sessionId, []);
+      }
+      const messages = this.conversations.get(sessionId);
 
-    // Agregar mensaje del usuario/sistema
-    messages.push({ role: 'user', content: input });
+      // Agregar mensaje del usuario/sistema
+      messages.push({ role: 'user', content: input });
 
-    // Limitar historial a 30 mensajes
-    if (messages.length > 30) {
-      messages.splice(0, messages.length - 30);
-    }
-
-    // Llamar a Claude con las herramientas
-    let response = await client.messages.create({
-      model: process.env.CLAUDE_MODEL || 'claude-3-haiku-20240307',
-      max_tokens: 4096,
-      system: SYSTEM_PROMPT,
-      tools: ALL_TOOLS,
-      messages,
-    });
-
-    const actionsLog = [];
-
-    // Agentic loop: ejecutar herramientas hasta que Claude termine
-    while (response.stop_reason === 'tool_use') {
-      const toolUseBlocks = response.content.filter((b) => b.type === 'tool_use');
-      const toolResults = [];
-
-      for (const toolUse of toolUseBlocks) {
-        const handler = ALL_HANDLERS[toolUse.name];
-        let result;
-
-        try {
-          if (!handler) {
-            result = { error: `Herramienta ${toolUse.name} no encontrada` };
-          } else {
-            result = await handler(toolUse.input);
-          }
-        } catch (err) {
-          result = { error: err.message };
-        }
-
-        // Log de la acción
-        const action = {
-          tool: toolUse.name,
-          input: toolUse.input,
-          success: !result?.error,
-          agent: toolUse.name.split('_')[0],
-        };
-        actionsLog.push(action);
-
-        // Publicar evento en la pizarra
-        await eventBus.publish(
-          `tool.${result?.error ? 'error' : 'executed'}`,
-          action.agent,
-          { tool: toolUse.name, input: toolUse.input, result_preview: JSON.stringify(result).slice(0, 500) }
-        );
-
-        toolResults.push({
-          type: 'tool_result',
-          tool_use_id: toolUse.id,
-          content: JSON.stringify(result),
-        });
+      // Limitar historial a 30 mensajes
+      if (messages.length > 30) {
+        messages.splice(0, messages.length - 30);
       }
 
-      // Agregar la respuesta de Claude y los resultados al historial
-      messages.push({ role: 'assistant', content: response.content });
-      messages.push({ role: 'user', content: toolResults });
-
-      // Siguiente iteración
-      response = await client.messages.create({
+      // Llamar a Claude con las herramientas
+      let response = await client.messages.create({
         model: process.env.CLAUDE_MODEL || 'claude-3-haiku-20240307',
         max_tokens: 4096,
         system: SYSTEM_PROMPT,
         tools: ALL_TOOLS,
         messages,
       });
+
+      const actionsLog = [];
+
+      // Agentic loop: ejecutar herramientas hasta que Claude termine
+      while (response.stop_reason === 'tool_use') {
+        const toolUseBlocks = response.content.filter((b) => b.type === 'tool_use');
+        const toolResults = [];
+
+        for (const toolUse of toolUseBlocks) {
+          const handler = ALL_HANDLERS[toolUse.name];
+          let result;
+
+          try {
+            if (!handler) {
+              result = { error: `Herramienta ${toolUse.name} no encontrada` };
+            } else {
+              result = await handler(toolUse.input);
+            }
+          } catch (err) {
+            result = { error: err.message };
+          }
+
+          // Log de la acción
+          const action = {
+            tool: toolUse.name,
+            input: toolUse.input,
+            success: !result?.error,
+            agent: toolUse.name.split('_')[0],
+          };
+          actionsLog.push(action);
+
+          // Publicar evento en la pizarra
+          await eventBus.publish(
+            `tool.${result?.error ? 'error' : 'executed'}`,
+            action.agent,
+            { tool: toolUse.name, input: toolUse.input, result_preview: JSON.stringify(result).slice(0, 500) }
+          );
+
+          toolResults.push({
+            type: 'tool_result',
+            tool_use_id: toolUse.id,
+            content: JSON.stringify(result),
+          });
+        }
+
+        // Agregar la respuesta de Claude y los resultados al historial
+        messages.push({ role: 'assistant', content: response.content });
+        messages.push({ role: 'user', content: toolResults });
+
+        // Siguiente iteración
+        response = await client.messages.create({
+          model: process.env.CLAUDE_MODEL || 'claude-3-haiku-20240307',
+          max_tokens: 4096,
+          system: SYSTEM_PROMPT,
+          tools: ALL_TOOLS,
+          messages,
+        });
+      }
+
+      // Extraer la respuesta final de texto
+      const textBlocks = response.content.filter((b) => b.type === 'text');
+      const finalText = textBlocks.map((b) => b.text).join('\n');
+
+      // Guardar respuesta en el historial
+      messages.push({ role: 'assistant', content: response.content });
+
+      // Registrar decisión del cerebro
+      if (actionsLog.length > 0) {
+        await query(
+          `INSERT INTO brain_decisions (decision_type, agents_involved, reasoning, actions_taken, confidence)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [
+            'orchestration',
+            [...new Set(actionsLog.map((a) => a.agent))],
+            finalText.slice(0, 1000),
+            JSON.stringify(actionsLog),
+            null,
+          ]
+        );
+      }
+
+      return {
+        response: finalText,
+        actions: actionsLog,
+        agents_used: [...new Set(actionsLog.map((a) => a.agent))],
+      };
+    } catch (err) {
+      console.error('Error in orchestrator.process:', err);
+      return { response: 'Disculpe, ha ocurrido un error. Por favor, inténtelo de nuevo más tarde.' };
     }
-
-    // Extraer la respuesta final de texto
-    const textBlocks = response.content.filter((b) => b.type === 'text');
-    const finalText = textBlocks.map((b) => b.text).join('\n');
-
-    // Guardar respuesta en el historial
-    messages.push({ role: 'assistant', content: response.content });
-
-    // Registrar decisión del cerebro
-    if (actionsLog.length > 0) {
-      await query(
-        `INSERT INTO brain_decisions (decision_type, agents_involved, reasoning, actions_taken, confidence)
-         VALUES ($1, $2, $3, $4, $5)`,
-        [
-          'orchestration',
-          [...new Set(actionsLog.map((a) => a.agent))],
-          finalText.slice(0, 1000),
-          JSON.stringify(actionsLog),
-          null,
-        ]
-      );
-    }
-
-    return {
-      response: finalText,
-      actions: actionsLog,
-      agents_used: [...new Set(actionsLog.map((a) => a.agent))],
-    };
   }
 
   // Procesar evento automáticamente (sin input humano)
