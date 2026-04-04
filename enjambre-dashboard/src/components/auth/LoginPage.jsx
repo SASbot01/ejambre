@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Zap, Eye, EyeOff, ArrowRight } from 'lucide-react';
+import { Eye, EyeOff, ArrowRight } from 'lucide-react';
 
 export default function LoginPage({ onLogin }) {
   const [email, setEmail] = useState('');
@@ -48,13 +48,13 @@ export default function LoginPage({ onLogin }) {
       {/* Ambient orbs */}
       <div style={{
         position: 'fixed', width: 500, height: 500,
-        background: 'radial-gradient(circle, rgba(255,107,0,0.08), transparent)',
+        background: 'radial-gradient(circle, rgba(245,245,245,0.06), transparent)',
         borderRadius: '50%', filter: 'blur(120px)',
         top: '-15%', right: '-10%', pointerEvents: 'none',
       }} />
       <div style={{
         position: 'fixed', width: 400, height: 400,
-        background: 'radial-gradient(circle, rgba(255,184,0,0.06), transparent)',
+        background: 'radial-gradient(circle, rgba(245,245,245,0.04), transparent)',
         borderRadius: '50%', filter: 'blur(120px)',
         bottom: '-10%', left: '-5%', pointerEvents: 'none',
       }} />
@@ -75,9 +75,9 @@ export default function LoginPage({ onLogin }) {
             background: '#F5F5F5',
             borderRadius: 18,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-            boxShadow: '0 8px 32px rgba(255,107,0,0.2)',
+            boxShadow: '0 8px 32px rgba(245,245,245,0.1)',
           }}>
-            <Zap size={32} color="#000" />
+            <span style={{ fontSize: '1.2rem', fontWeight: 800, color: '#000' }}>BW</span>
           </div>
           <h1 style={{
             fontSize: '1.8rem', fontWeight: 800,
@@ -90,15 +90,9 @@ export default function LoginPage({ onLogin }) {
             }}>BLACKWOLF</span>
           </h1>
           <p style={{
-            color: '#A0A0A0', marginTop: 6, fontSize: '0.9rem',
-            fontWeight: 500, letterSpacing: 2,
-          }}>
-            ENJAMBRE
-          </p>
-          <p style={{
             color: '#555', marginTop: 12, fontSize: '0.8rem',
           }}>
-            Centro de Comando — Acceso Restringido
+            Panel de Control — Acceso Restringido
           </p>
         </div>
 
@@ -199,7 +193,7 @@ export default function LoginPage({ onLogin }) {
             }}
           >
             {loading ? 'Verificando...' : (
-              <>Acceder al Enjambre <ArrowRight size={16} /></>
+              <>Acceder <ArrowRight size={16} /></>
             )}
           </button>
         </form>

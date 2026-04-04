@@ -1,47 +1,213 @@
-import React, { useState } from 'react';
-import {
-  LayoutDashboard, Shield, Users, TrendingUp, FileText,
-  Brain, Activity, Building2, LogOut, Zap, ChevronRight, Code2,
-  Home, ArrowLeft,
-} from 'lucide-react';
-import KPIPanel from './components/dashboard/KPIPanel.jsx';
-import AgentPanel from './components/agents/AgentPanel.jsx';
-import EventStream from './components/events/EventStream.jsx';
-import ChatPanel from './components/chat/ChatPanel.jsx';
-import DevAgent from './components/agents/DevAgent.jsx';
-import OfficeWorld from './components/office/OfficeWorld.jsx';
-import EnjambreHome from './components/home/EnjambreHome.jsx';
-import LoginPage from './components/auth/LoginPage.jsx';
+import { useState, useEffect, useRef } from 'react';
+import { Activity, Send } from 'lucide-react';
 import { useEventStream } from './hooks/useEventStream.js';
-import { logout } from './services/api.js';
+import { sendChat, getAgentStatus, logout } from './services/api.js';
+import LoginPage from './components/auth/LoginPage.jsx';
 
-const DASHBOARD_OPS_URL = 'https://central.blackwolfsec.io/admin';
+const AGENTS_META = {
+  ciber:      { label: 'CIBER',      color: 'var(--agent-ciber)',    desc: 'SOC / Ciberseguridad',   forClients: true },
+  crm:        { label: 'CRM',        color: 'var(--agent-crm)',      desc: 'Leads y Pipeline',        forClients: false },
+  ops:        { label: 'OPS',        color: 'var(--agent-ops)',       desc: 'Revenue y Operaciones',   forClients: false },
+  forms:      { label: 'FORMS',      color: 'var(--agent-forms)',     desc: 'Formularios Web',         forClients: false },
+  whatsapp:   { label: 'WHATSAPP',   color: 'var(--agent-whatsapp)', desc: 'Setter WhatsApp',         forClients: true },
+  discord:    { label: 'DISCORD',    color: 'var(--agent-discord)',   desc: 'Bot Discord',             forClients: false },
+  prospector: { label: 'PROSPECTOR', color: 'var(--info)',            desc: 'Cold Outreach',           forClients: false },
+  brain:      { label: 'CEREBRO',    color: 'var(--white)',           desc: 'Orquestador IA',          forClients: false },
+};
 
-const SIDEBAR_ITEMS = [
-  { key: 'home', icon: Home, label: 'Home' },
-  { key: 'office', icon: Building2, label: 'Oficina Virtual' },
-  { key: 'dashboard', icon: LayoutDashboard, label: 'Centro de Comando' },
-  { key: 'chat', icon: Brain, label: 'Cerebro IA' },
-  { divider: true, label: 'Agentes' },
-  { key: 'ciber', icon: Shield, label: 'CIBER / SOC', badge: 'ciber' },
-  { key: 'crm', icon: Users, label: 'CRM / Leads', badge: 'crm' },
-  { key: 'ops', icon: TrendingUp, label: 'OPS / ERP', badge: 'ops' },
-  { key: 'forms', icon: FileText, label: 'Formularios', badge: 'forms' },
-  { divider: true, label: 'Desarrollo' },
-  { key: 'developer', icon: Code2, label: 'Dev Agent' },
-  { divider: true, label: 'Sistema' },
-  { key: 'events', icon: Activity, label: 'Event Stream' },
+const QUICK_PROMPTS = [
+  'Resumen general',
+  'Amenazas activas',
+  'Pipeline de leads hoy',
+  'Estado de los agentes',
+  'Ventas del mes',
 ];
 
+// ── Agent Tiles ──
+function AgentGrid({ agents }) {
+  return (
+    <>
+      <div className="section-label">Agentes Activos</div>
+      <div className="agents-grid">
+        {agents.map(a => {
+          const meta = AGENTS_META[a.agent_name] || { label: a.agent_name, color: 'var(--text-muted)', desc: '' };
+          const online = a.last_heartbeat && (Date.now() - new Date(a.last_heartbeat).getTime() < 120_000);
+          return (
+            <div className="agent-tile" key={a.agent_name}>
+              <div className="agent-tile__header">
+                <div className={`agent-tile__dot agent-tile__dot--${online ? 'on' : 'off'}`} />
+                <span className="agent-tile__name" style={{ color: meta.color }}>{meta.label}</span>
+              </div>
+              <div className="agent-tile__desc">{meta.desc}</div>
+              {meta.forClients && (
+                <div className="agent-tile__client">Disponible para clientes</div>
+              )}
+            </div>
+          );
+        })}
+        {agents.length === 0 && (
+          <div style={{ gridColumn: '1 / -1', color: 'var(--text-muted)', fontSize: '0.8rem', padding: 20, textAlign: 'center' }}>
+            Sin agentes registrados
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
+// ── Client Cards ──
+function ClientGrid({ agents }) {
+  // Derive clients from agent assignments — for now show which agents serve clients
+  const clientAgents = agents.filter(a => {
+    const meta = AGENTS_META[a.agent_name];
+    return meta?.forClients;
+  });
+
+  if (clientAgents.length === 0) return null;
+
+  return (
+    <>
+      <div className="section-label">Servicios para Clientes</div>
+      <div className="clients-grid">
+        {clientAgents.map(a => {
+          const meta = AGENTS_META[a.agent_name] || { label: a.agent_name, color: 'var(--text-muted)', desc: '' };
+          const online = a.last_heartbeat && (Date.now() - new Date(a.last_heartbeat).getTime() < 120_000);
+          return (
+            <div className="client-card" key={a.agent_name} style={{ cursor: 'default' }}>
+              <div className="client-card__icon" style={{ background: `${meta.color}18`, border: `1px solid ${meta.color}30`, color: meta.color }}>
+                {meta.label[0]}
+              </div>
+              <div className="client-card__info">
+                <div className="client-card__name">{meta.desc}</div>
+                <div className="client-card__agents">
+                  {online ? 'Activo' : 'Inactivo'} — {meta.label}
+                </div>
+              </div>
+              <div className={`topnav__dot topnav__dot--${online ? 'on' : 'off'}`} />
+            </div>
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
+// ── Event Stream ──
+function EventList({ events, limit = 50 }) {
+  const shown = events.slice(0, limit);
+  return (
+    <div className="widget" style={{ maxHeight: 500, overflow: 'auto' }}>
+      <div className="widget__title">Eventos en tiempo real</div>
+      <div className="events-list">
+        {shown.map((e, i) => {
+          const meta = AGENTS_META[e.source_agent] || { label: e.source_agent || '?', color: 'var(--text-muted)' };
+          const time = e.created_at ? new Date(e.created_at).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '';
+          const text = e.event_type || '';
+          return (
+            <div className="event-row" key={i}>
+              <span className="event-row__time">{time}</span>
+              <span className="event-row__badge" style={{ background: `${meta.color}18`, color: meta.color, border: `1px solid ${meta.color}30` }}>
+                {meta.label}
+              </span>
+              <span className="event-row__text">{text}</span>
+            </div>
+          );
+        })}
+        {shown.length === 0 && (
+          <div style={{ padding: 20, textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.8rem' }}>
+            Esperando eventos...
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Chat Panel ──
+function ChatPanel() {
+  const [messages, setMessages] = useState([]);
+  const [input, setInput] = useState('');
+  const [loading, setLoading] = useState(false);
+  const messagesEnd = useRef(null);
+
+  useEffect(() => {
+    messagesEnd.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
+
+  async function handleSend(text) {
+    const msg = text || input.trim();
+    if (!msg || loading) return;
+    setInput('');
+    setMessages(prev => [...prev, { role: 'user', content: msg }]);
+    setLoading(true);
+    try {
+      const res = await sendChat(msg);
+      setMessages(prev => [...prev, { role: 'bot', content: res.response || 'Sin respuesta.', agents: res.agents_used }]);
+    } catch (err) {
+      setMessages(prev => [...prev, { role: 'bot', content: `Error: ${err.message}` }]);
+    }
+    setLoading(false);
+  }
+
+  return (
+    <div className="widget chat">
+      <div className="widget__title">Agente IA</div>
+
+      {messages.length === 0 && (
+        <div className="quick-actions">
+          {QUICK_PROMPTS.map(p => (
+            <button key={p} className="quick-action" onClick={() => handleSend(p)}>{p}</button>
+          ))}
+        </div>
+      )}
+
+      <div className="chat__messages">
+        {messages.map((m, i) => (
+          <div key={i} className={`chat__msg chat__msg--${m.role === 'user' ? 'user' : 'bot'}`}>
+            {m.content}
+            {m.agents?.length > 0 && (
+              <div style={{ marginTop: 8, fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                Agentes: {m.agents.join(', ')}
+              </div>
+            )}
+          </div>
+        ))}
+        {loading && (
+          <div className="chat__msg chat__msg--bot" style={{ color: 'var(--text-muted)' }}>
+            Pensando...
+          </div>
+        )}
+        <div ref={messagesEnd} />
+      </div>
+
+      <div className="chat__input-row">
+        <input
+          className="chat__input"
+          placeholder="Pregunta al agente..."
+          value={input}
+          onChange={e => setInput(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && !e.shiftKey && (e.preventDefault(), handleSend())}
+          disabled={loading}
+        />
+        <button className="chat__send" onClick={() => handleSend()} disabled={loading || !input.trim()}>
+          <Send size={16} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Main App ──
 export default function App() {
   const [page, setPage] = useState('home');
   const [user, setUser] = useState(() => {
     try { return JSON.parse(localStorage.getItem('enjambre_user')); } catch { return null; }
   });
+  const [agents, setAgents] = useState([]);
   const { events, connected } = useEventStream();
 
-  // Auto-login via URL token (from Dashboard-Ops Home)
-  React.useEffect(() => {
+  // Auto-login via URL token
+  useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const token = params.get('token');
     if (token && !localStorage.getItem('enjambre_token')) {
@@ -56,227 +222,87 @@ export default function App() {
     }
   }, []);
 
+  // Fetch agent status
+  useEffect(() => {
+    if (!user) return;
+    const load = () => getAgentStatus().then(setAgents).catch(() => {});
+    load();
+    const interval = setInterval(load, 15_000);
+    return () => clearInterval(interval);
+  }, [user]);
+
   if (!user || !localStorage.getItem('enjambre_token')) {
     return <LoginPage onLogin={setUser} />;
   }
 
-  // Home renders without sidebar (full-screen like iPad)
-  if (page === 'home') {
-    return (
-      <div style={{ minHeight: '100vh', background: 'var(--bg)', color: 'var(--text)', fontFamily: 'var(--font)' }}>
-        <EnjambreHome
-          onNavigate={setPage}
-          events={events}
-          connected={connected}
-          user={user}
-        />
-      </div>
-    );
-  }
+  const navItems = [
+    { key: 'home', label: 'Home' },
+    { key: 'chat', label: 'Agente IA' },
+    { key: 'events', label: 'Eventos' },
+  ];
 
   return (
-    <div className="app">
-      {/* Header */}
-      <header className="header">
-        <div className="header-brand">
-          {/* Back to Home Central */}
-          <a
-            href={DASHBOARD_OPS_URL}
-            title="Volver al Home Central"
-            style={{
-              width: 30, height: 30, borderRadius: 8,
-              background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              color: '#888', textDecoration: 'none', transition: 'all 0.15s',
-              marginRight: 4, flexShrink: 0,
-            }}
-            onMouseEnter={e => { e.currentTarget.style.borderColor = '#F5F5F5'; e.currentTarget.style.color = '#F5F5F5'; }}
-            onMouseLeave={e => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.1)'; e.currentTarget.style.color = '#888'; }}
-          >
-            <ArrowLeft size={14} />
-          </a>
-          <div className="brand-icon" style={{ position: 'relative' }}>
-            <Zap size={16} />
-            {/* BW badge */}
-            <div style={{
-              position: 'absolute', bottom: -3, right: -3,
-              width: 14, height: 14, borderRadius: 4,
-              background: '#0A0A0A', border: '1.5px solid #F5F5F5',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              fontSize: '0.35rem', fontWeight: 900, color: '#F5F5F5',
-            }}>BW</div>
+    <div style={{ minHeight: '100vh', background: 'var(--bg)', color: 'var(--text)', fontFamily: 'var(--font)' }}>
+      {/* ── Top Navigation ── */}
+      <nav className="topnav">
+        <div className="topnav__left">
+          <button className="topnav__home" onClick={() => setPage('home')}>
+            <span className="topnav__logo-placeholder">BW</span>
+            <span className="topnav__brand">BLACK WOLF</span>
+          </button>
+
+          <div className="topnav__sections">
+            {navItems.map(item => (
+              <button
+                key={item.key}
+                className={`topnav__item ${page === item.key ? 'topnav__item--active' : ''}`}
+                onClick={() => setPage(item.key)}
+              >
+                {item.label}
+              </button>
+            ))}
           </div>
-          <span className="brand-wolf">BLACKWOLF</span>
-          <span className="brand-enjambre">ENJAMBRE</span>
         </div>
-        <div className="header-status">
-          <div className="header-pill">
+
+        <div className="topnav__right">
+          <div className="topnav__status">
+            <div className={`topnav__dot topnav__dot--${connected ? 'on' : 'off'}`} />
+            {connected ? 'Live' : 'Offline'}
+          </div>
+          <div className="topnav__status">
             <Activity size={12} />
-            <span>{events.length} eventos</span>
+            {events.length}
           </div>
-          <div className="header-pill">
-            <div className={`dot ${connected ? 'online' : 'offline'}`} />
-            <span style={{ color: connected ? 'var(--success)' : 'var(--danger)' }}>
-              {connected ? 'Conectado' : 'Desconectado'}
-            </span>
+          <div className="topnav__user">
+            <div className="topnav__avatar">{(user.email || 'A')[0].toUpperCase()}</div>
           </div>
-          <button className="header-btn" onClick={logout} title="Cerrar sesion">
-            <LogOut size={14} />
+          <button className="topnav__action topnav__action--logout" onClick={logout}>
             Salir
           </button>
         </div>
-      </header>
+      </nav>
 
-      {/* Sidebar */}
-      <aside className="sidebar">
-        {SIDEBAR_ITEMS.map((item, i) => {
-          if (item.divider) {
-            return (
-              <div key={i} className="sidebar-section">
-                <div className="sidebar-label">{item.label}</div>
-              </div>
-            );
-          }
-          const Icon = item.icon;
-          return (
-            <div className="sidebar-section" key={item.key} style={{ marginBottom: 0 }}>
-              <button
-                className={`sidebar-item ${page === item.key ? 'active' : ''}`}
-                onClick={() => setPage(item.key)}
-              >
-                <div className="item-icon">
-                  <Icon size={18} />
-                </div>
-                {item.label}
-                {page === item.key && (
-                  <ChevronRight size={14} style={{ marginLeft: 'auto', opacity: 0.5 }} />
-                )}
-              </button>
-            </div>
-          );
-        })}
-
-        <div className="sidebar-footer">
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px' }}>
-            <div style={{
-              width: 32, height: 32, borderRadius: '50%',
-              background: 'var(--gradient)',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              color: 'var(--black)', fontWeight: 700, fontSize: 12,
-            }}>
-              {(user?.email || 'A')[0].toUpperCase()}
-            </div>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text)' }}>
-                {user?.name || 'Admin'}
-              </div>
-              <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {user?.email || ''}
-              </div>
-            </div>
-          </div>
-        </div>
-      </aside>
-
-      {/* Main Content */}
+      {/* ── Content ── */}
       <main className="main">
-        {page === 'office' && <OfficeWorld />}
-
-        {page === 'dashboard' && (
-          <div className="fade-in">
-            <h2 className="page-title">
-              <LayoutDashboard size={22} />
-              <span className="title-gradient">Centro de Comando</span>
-            </h2>
-            <KPIPanel />
-            <AgentPanel events={events} />
-            <div className="content-grid">
-              <EventStream events={events} />
+        {page === 'home' && (
+          <>
+            <AgentGrid agents={agents} />
+            <ClientGrid agents={agents} />
+            <div className="two-col">
               <ChatPanel />
+              <EventList events={events} />
             </div>
-          </div>
+          </>
         )}
 
         {page === 'chat' && (
-          <div className="fade-in">
-            <h2 className="page-title">
-              <Brain size={22} />
-              <span className="title-gradient">Cerebro del Enjambre</span>
-            </h2>
-            <div style={{ maxWidth: 900 }}>
-              <ChatPanel />
-            </div>
-          </div>
-        )}
-
-        {page === 'ciber' && (
-          <div className="fade-in">
-            <h2 className="page-title">
-              <Shield size={22} style={{ color: 'var(--agent-ciber)' }} />
-              Agente CIBER / SOC
-            </h2>
-            <div className="info-card">
-              <div className="info-title"><div className="title-dot" />Estado del SOC</div>
-              <p>Conectado a BlackWolf SOC. Las amenazas se procesan automaticamente. Usa el chat del Cerebro para consultar amenazas, bloquear IPs o ejecutar playbooks.</p>
-            </div>
-            <EventStream events={events.filter((e) => e.source_agent === 'ciber')} />
-          </div>
-        )}
-
-        {page === 'crm' && (
-          <div className="fade-in">
-            <h2 className="page-title">
-              <Users size={22} style={{ color: 'var(--agent-crm)' }} />
-              Agente CRM / Leads
-            </h2>
-            <KPIPanel />
-            <EventStream events={events.filter((e) => ['crm', 'forms'].includes(e.source_agent))} />
-          </div>
-        )}
-
-        {page === 'ops' && (
-          <div className="fade-in">
-            <h2 className="page-title">
-              <TrendingUp size={22} style={{ color: 'var(--agent-ops)' }} />
-              Agente OPS / ERP
-            </h2>
-            <div className="info-card">
-              <div className="info-title"><div className="title-dot" />Dashboard-Ops</div>
-              <p>Conectado a Dashboard-Ops via Supabase. Ventas, comisiones y proyecciones disponibles via el Cerebro.</p>
-            </div>
-            <EventStream events={events.filter((e) => e.source_agent === 'ops')} />
-          </div>
-        )}
-
-        {page === 'forms' && (
-          <div className="fade-in">
-            <h2 className="page-title">
-              <FileText size={22} style={{ color: 'var(--agent-forms)' }} />
-              Formularios de Infoproductos
-            </h2>
-            <div className="info-card">
-              <div className="info-title"><div className="title-dot" />Webhook de Formularios</div>
-              <p>Endpoint: <code>POST https://forms.tudominio.com/webhook</code></p>
-              <p style={{ marginTop: 8 }}>Envia un JSON con: <code>email</code> (requerido), <code>nombre</code>, <code>telefono</code>, <code>producto</code>, <code>landing</code>, <code>utm_source</code>, <code>utm_medium</code>, <code>utm_campaign</code></p>
-            </div>
-            <EventStream events={events.filter((e) => e.source_agent === 'forms')} />
-          </div>
-        )}
-
-        {page === 'developer' && (
-          <div className="fade-in">
-            <DevAgent events={events} />
+          <div style={{ maxWidth: 900 }}>
+            <ChatPanel />
           </div>
         )}
 
         {page === 'events' && (
-          <div className="fade-in">
-            <h2 className="page-title">
-              <Activity size={22} />
-              <span className="title-gradient">Event Stream</span>
-            </h2>
-            <EventStream events={events} />
-          </div>
+          <EventList events={events} limit={200} />
         )}
       </main>
     </div>
