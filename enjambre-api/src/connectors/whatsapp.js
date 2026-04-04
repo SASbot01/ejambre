@@ -317,12 +317,19 @@ async function getSystemStatus() {
 // Initialize client
 // ---------------------------------------------------------------------------
 function createWhatsAppClient() {
+  const puppeteerOpts = {
+    headless: true,
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
+  };
+  // Use system Chromium in Docker (set via env PUPPETEER_EXECUTABLE_PATH)
+  const chromePath = process.env.PUPPETEER_EXECUTABLE_PATH;
+  if (chromePath) {
+    puppeteerOpts.executablePath = chromePath;
+  }
+
   const client = new Client({
-    authStrategy: new LocalAuth({ dataPath: '/home/s4sf/ejambre/enjambre-api/.wwebjs_auth' }),
-    puppeteer: {
-      headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
-    },
+    authStrategy: new LocalAuth({ dataPath: '/app/.wwebjs_auth' }),
+    puppeteer: puppeteerOpts,
   });
 
   client.on('qr', (qr) => {

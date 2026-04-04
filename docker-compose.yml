@@ -63,6 +63,10 @@ services:
       - WA_ACCESS_TOKEN=${WA_ACCESS_TOKEN}
       - WA_VERIFY_TOKEN=${WA_VERIFY_TOKEN:-enjambre-verify-2026}
       - WA_ALLOWED_NUMBERS=${WA_ALLOWED_NUMBERS}
+      - WA_GROUP_ID=${WA_GROUP_ID}
+      - WA_BOT_PREFIX=${WA_BOT_PREFIX:-!bw}
+    volumes:
+      - wwebjs_auth:/app/.wwebjs_auth
     expose:
       - "3500"
     depends_on:
@@ -95,6 +99,7 @@ services:
 
 volumes:
   postgres_data:
+  wwebjs_auth:
 
 networks:
   enjambre:
