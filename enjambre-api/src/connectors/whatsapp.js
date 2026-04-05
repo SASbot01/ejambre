@@ -106,6 +106,31 @@ function splitMessage(text, maxLength = 4000) {
 }
 
 // ---------------------------------------------------------------------------
+// Setter config (from Supabase)
+// ---------------------------------------------------------------------------
+let setterConfigCache = null;
+let setterConfigLastFetch = 0;
+
+async function getSetterConfig() {
+  if (!supabase || !sessionOwnerId) return { enabled: false, message: '' };
+  // Cache for 30 seconds
+  if (setterConfigCache && Date.now() - setterConfigLastFetch < 30000) return setterConfigCache;
+  try {
+    const { data } = await supabase
+      .from('whatsapp_config')
+      .select('setter_enabled, setter_message')
+      .eq('client_id', sessionOwnerId)
+      .limit(1)
+      .single();
+    setterConfigCache = { enabled: !!data?.setter_enabled, message: data?.setter_message || '' };
+    setterConfigLastFetch = Date.now();
+    return setterConfigCache;
+  } catch {
+    return { enabled: false, message: '' };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Persist messages to CRM (Supabase)
 // ---------------------------------------------------------------------------
 async function findCrmContact(phone) {
@@ -230,7 +255,7 @@ async function processAccumulatedMessages(chatId, messages) {
   // Add to conversation history
   addToHistory(chatId, 'user', combinedBody);
 
-  // Persist inbound message to CRM + agent conversations
+  // Always persist inbound message to CRM + agent conversations
   const crmContact = await findCrmContact(last.senderNumber).catch(() => null);
   if (crmContact) {
     saveCrmMessage(crmContact.id, 'whatsapp', 'inbound', last.senderName, combinedBody).catch(() => {});
@@ -240,17 +265,35 @@ async function processAccumulatedMessages(chatId, messages) {
     saveAgentMessage(agentConvId, 'user', combinedBody).catch(() => {});
   }
 
+  console.log(`[WhatsApp] <- ${last.chatName} (${last.senderName}): ${combinedBody.slice(0, 80)}`);
+
+  // Check if auto-setter is enabled
+  const setterConfig = await getSetterConfig();
+  if (!setterConfig.enabled && !last.isGroupCommand) {
+    console.log(`[WhatsApp] Setter disabled — message saved but not auto-responding to ${last.chatName}`);
+    return;
+  }
+
   try {
     await waitForRateLimit();
 
     const sessionId = getSessionId(chatId);
 
-    // Build context with CRM contact info if available
-    let extraContext = '';
-    if (crmContact) {
-      extraContext = `\n[CRM Contact: ${crmContact.name || 'Unknown'}${crmContact.notes ? ', Notes: ' + crmContact.notes : ''}]`;
+    // Build prompt with setter instructions + CRM context
+    let systemContext = '';
+    if (setterConfig.message) {
+      systemContext += `[Setter Instructions: ${setterConfig.message}]\n`;
     }
-    const prompt = extraContext ? combinedBody + extraContext : combinedBody;
+    if (crmContact) {
+      systemContext += `[CRM Contact: ${crmContact.name || 'Unknown'}${crmContact.notes ? ', Notes: ' + crmContact.notes : ''}]\n`;
+    }
+    // Get recent conversation history for continuity
+    const history = getHistory(chatId);
+    if (history.length > 1) {
+      const recentMsgs = history.slice(-10, -1).map(h => `${h.role === 'user' ? 'Contact' : 'Setter'}: ${h.content}`).join('\n');
+      systemContext += `[Recent conversation:\n${recentMsgs}]\n`;
+    }
+    const prompt = systemContext ? systemContext + '\n' + combinedBody : combinedBody;
 
     const result = await orchestrator.process(prompt, sessionId);
     const response = result.response || 'Sin respuesta del Cerebro.';
@@ -259,7 +302,7 @@ async function processAccumulatedMessages(chatId, messages) {
     if (!last.isGroupCommand) {
       const delay = randomDelay();
       const mins = (delay / 60_000).toFixed(1);
-      console.log(`[WhatsApp] Esperando ${mins} min antes de responder a ${last.chatName}...`);
+      console.log(`[WhatsApp] Setter waiting ${mins} min before replying to ${last.chatName}...`);
       await new Promise(r => setTimeout(r, delay));
 
       // Send seen + typing
@@ -281,7 +324,7 @@ async function processAccumulatedMessages(chatId, messages) {
     for (const chunk of chunks) {
       await waClient.sendMessage(chatId, chunk);
     }
-    console.log(`[WhatsApp] -> ${last.chatName}: ${response.slice(0, 100)}...`);
+    console.log(`[WhatsApp] Setter -> ${last.chatName}: ${response.slice(0, 100)}...`);
 
     // Persist outbound message to CRM + agent conversations
     if (crmContact) {
@@ -305,9 +348,6 @@ async function processAccumulatedMessages(chatId, messages) {
     });
   } catch (err) {
     console.error('[WhatsApp] Error procesando mensajes:', err.message);
-    try {
-      await waClient.sendMessage(chatId, 'Error procesando tu mensaje. Intenta de nuevo.');
-    } catch {}
   }
 }
 
