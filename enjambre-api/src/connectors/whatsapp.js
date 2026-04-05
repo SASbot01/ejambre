@@ -8,6 +8,7 @@ import qrcode from 'qrcode-terminal';
 import QRCode from 'qrcode';
 import { orchestrator } from '../agents/orchestrator.js';
 import { eventBus } from '../events/event-bus.js';
+import { supabase } from '../config/database.js';
 
 // ---------------------------------------------------------------------------
 // Config
@@ -105,6 +106,39 @@ function splitMessage(text, maxLength = 4000) {
 }
 
 // ---------------------------------------------------------------------------
+// Persist messages to CRM (Supabase)
+// ---------------------------------------------------------------------------
+async function findCrmContact(phone) {
+  if (!supabase || !sessionOwnerId) return null;
+  const clean = phone.replace(/\D/g, '');
+  // Search by phone or whatsapp field
+  const { data } = await supabase
+    .from('crm_contacts')
+    .select('id, client_id, name, notes')
+    .eq('client_id', sessionOwnerId)
+    .or(`phone.ilike.%${clean}%,whatsapp.ilike.%${clean}%`)
+    .limit(1);
+  return data?.[0] || null;
+}
+
+async function saveCrmMessage(contactId, channel, direction, senderName, content) {
+  if (!supabase || !sessionOwnerId) return;
+  try {
+    await supabase.from('crm_messages').insert({
+      client_id: sessionOwnerId,
+      contact_id: contactId,
+      channel,
+      direction,
+      sender_name: senderName,
+      content,
+      status: 'sent',
+    });
+  } catch (err) {
+    console.error('[WhatsApp] Error saving CRM message:', err.message);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Forward to central group
 // ---------------------------------------------------------------------------
 async function forwardToGroup(senderName, chatName, originalMessage, botReply) {
@@ -138,11 +172,25 @@ async function processAccumulatedMessages(chatId, messages) {
   // Add to conversation history
   addToHistory(chatId, 'user', combinedBody);
 
+  // Persist inbound message to CRM
+  const crmContact = await findCrmContact(last.senderNumber).catch(() => null);
+  if (crmContact) {
+    saveCrmMessage(crmContact.id, 'whatsapp', 'inbound', last.senderName, combinedBody).catch(() => {});
+  }
+
   try {
     await waitForRateLimit();
 
     const sessionId = getSessionId(chatId);
-    const result = await orchestrator.process(combinedBody, sessionId);
+
+    // Build context with CRM contact info if available
+    let extraContext = '';
+    if (crmContact) {
+      extraContext = `\n[CRM Contact: ${crmContact.name || 'Unknown'}${crmContact.notes ? ', Notes: ' + crmContact.notes : ''}]`;
+    }
+    const prompt = extraContext ? combinedBody + extraContext : combinedBody;
+
+    const result = await orchestrator.process(prompt, sessionId);
     const response = result.response || 'Sin respuesta del Cerebro.';
 
     // Simulate human behavior (skip for bot group)
@@ -172,6 +220,11 @@ async function processAccumulatedMessages(chatId, messages) {
       await waClient.sendMessage(chatId, chunk);
     }
     console.log(`[WhatsApp] -> ${last.chatName}: ${response.slice(0, 100)}...`);
+
+    // Persist outbound message to CRM
+    if (crmContact) {
+      saveCrmMessage(crmContact.id, 'whatsapp', 'outbound', 'AI Setter', response).catch(() => {});
+    }
 
     // Forward to group (async, skip if message came from group)
     if (!last.isGroupCommand) {
