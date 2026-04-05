@@ -24,6 +24,7 @@ const WA_DEBOUNCE_MS = parseInt(process.env.WA_DEBOUNCE_MS, 10) || 10000;
 let waClient = null;
 let currentQR = null;
 let isReady = false;
+let sessionOwnerId = process.env.WA_DEFAULT_CLIENT_ID || null; // which clientId owns the current session
 const conversations = new Map(); // chatId -> { messages[], lastActivity }
 const MAX_HISTORY = 20;
 
@@ -388,27 +389,33 @@ function createWhatsAppClient() {
 // ---------------------------------------------------------------------------
 
 export function registerWhatsAppRoutes(app) {
-  // API endpoint: get QR code and status
-  app.get('/api/whatsapp/status', async () => {
+  // API endpoint: get QR code and status (per-client aware)
+  app.get('/api/whatsapp/status', async (req) => {
+    const requestedClientId = req.query.clientId;
+    const isOwner = !requestedClientId || !sessionOwnerId || sessionOwnerId === requestedClientId;
     let qrImage = null;
-    if (currentQR) {
+    if (currentQR && isOwner) {
       try {
         qrImage = await QRCode.toDataURL(currentQR, { width: 280, margin: 2 });
       } catch {}
     }
     return {
-      connected: isReady,
-      qr: currentQR || null,
-      qrImage,
+      connected: isReady && isOwner,
+      qr: isOwner ? (currentQR || null) : null,
+      qrImage: isOwner ? qrImage : null,
       activeConversations: conversations.size,
+      sessionOwner: sessionOwnerId || null,
     };
   });
 
-  // API endpoint: send message manually
+  // API endpoint: send message manually (per-client aware)
   app.post('/api/whatsapp/send', async (req) => {
     if (!isReady || !waClient) return { error: 'WhatsApp no conectado' };
-    const { to, message } = req.body;
+    const { to, message, clientId } = req.body;
     if (!to || !message) return { error: 'to y message son requeridos' };
+    if (clientId && sessionOwnerId && clientId !== sessionOwnerId) {
+      return { error: 'Sesion de WhatsApp pertenece a otro cliente' };
+    }
     try {
       await waClient.sendMessage(to.includes('@') ? to : `${to}@c.us`, message);
       return { ok: true };
@@ -417,17 +424,19 @@ export function registerWhatsAppRoutes(app) {
     }
   });
 
-  // API endpoint: restart/reconnect
-  app.post('/api/whatsapp/restart', async () => {
+  // API endpoint: restart/reconnect (per-client aware)
+  app.post('/api/whatsapp/restart', async (req) => {
+    const { clientId } = req.body || {};
     try {
       if (waClient) {
         await waClient.destroy().catch(() => {});
       }
+      if (clientId) sessionOwnerId = clientId;
       waClient = createWhatsAppClient();
       waClient.initialize().catch(err => {
         console.error('[WhatsApp] Error inicializando:', err.message);
       });
-      return { ok: true, message: 'Reiniciando - escanea el codigo QR cuando aparezca' };
+      return { ok: true, message: 'Reiniciando - escanea el codigo QR cuando aparezca', sessionOwner: sessionOwnerId };
     } catch (err) {
       return { error: err.message };
     }
