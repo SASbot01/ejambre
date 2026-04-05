@@ -8,10 +8,22 @@ import { query } from '../config/database.js';
 const client = new Anthropic();
 
 // Todas las herramientas combinadas
-const ALL_TOOLS = [...ciberTools, ...crmTools, ...opsTools];
+// Marcamos la última tool con cache_control para cachear todo el bloque de tools
+// (ahorra ~90% en input tokens de tools en llamadas repetidas dentro de 5 min)
+const ALL_TOOLS = [...ciberTools, ...crmTools, ...opsTools].map((t, i, arr) =>
+  i === arr.length - 1 ? { ...t, cache_control: { type: 'ephemeral' } } : t
+);
 
 // Todos los handlers combinados
 const ALL_HANDLERS = { ...ciberHandlers, ...crmHandlers, ...opsHandlers };
+
+// Modelo por defecto (env sobrescribe). Haiku 3.5 es ~3x más eficiente que Haiku 3.
+const DEFAULT_MODEL = process.env.CLAUDE_MODEL || 'claude-3-5-haiku-20241022';
+
+// Helper: construye el system como array con cache_control (Anthropic prompt caching)
+function cachedSystem(text) {
+  return [{ type: 'text', text, cache_control: { type: 'ephemeral' } }];
+}
 
 const SYSTEM_PROMPT = `Eres el "Cerebro del Enjambre" (Swarm Orchestrator) de BlackWolf.
 Tu función es coordinar una red de agentes especializados:
@@ -51,16 +63,16 @@ export class Orchestrator {
       // Agregar mensaje del usuario/sistema
       messages.push({ role: 'user', content: input });
 
-      // Limitar historial a 30 mensajes
-      if (messages.length > 30) {
-        messages.splice(0, messages.length - 30);
+      // Limitar historial a 20 mensajes (antes 30)
+      if (messages.length > 20) {
+        messages.splice(0, messages.length - 20);
       }
 
-      // Llamar a Claude con las herramientas
+      // Llamar a Claude con las herramientas (system + tools cacheados)
       let response = await client.messages.create({
-        model: process.env.CLAUDE_MODEL || 'claude-3-haiku-20240307',
-        max_tokens: 4096,
-        system: SYSTEM_PROMPT,
+        model: DEFAULT_MODEL,
+        max_tokens: 2048,
+        system: cachedSystem(SYSTEM_PROMPT),
         tools: ALL_TOOLS,
         messages,
       });
@@ -115,9 +127,9 @@ export class Orchestrator {
 
         // Siguiente iteración
         response = await client.messages.create({
-          model: process.env.CLAUDE_MODEL || 'claude-3-haiku-20240307',
-          max_tokens: 4096,
-          system: SYSTEM_PROMPT,
+          model: DEFAULT_MODEL,
+          max_tokens: 2048,
+          system: cachedSystem(SYSTEM_PROMPT),
           tools: ALL_TOOLS,
           messages,
         });
@@ -197,6 +209,43 @@ export class Orchestrator {
 
   clearSession(sessionId) {
     this.conversations.delete(sessionId);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Modo ligero para conversaciones setter/chat (WhatsApp, etc.)
+  // - Sin tools
+  // - System prompt cacheado (instrucciones del setter + docs estáticos)
+  // - Historial corto (10 msgs)
+  // Ahorra ~70-90% tokens vs orchestrator.process para chats de ventas.
+  // ---------------------------------------------------------------------------
+  async setterReply(staticSystem, userMessage, sessionId = 'default') {
+    try {
+      if (!this.conversations.has(sessionId)) {
+        this.conversations.set(sessionId, []);
+      }
+      const messages = this.conversations.get(sessionId);
+
+      messages.push({ role: 'user', content: userMessage });
+      if (messages.length > 10) {
+        messages.splice(0, messages.length - 10);
+      }
+
+      const response = await client.messages.create({
+        model: DEFAULT_MODEL,
+        max_tokens: 1024,
+        system: cachedSystem(staticSystem),
+        messages,
+      });
+
+      const textBlocks = response.content.filter((b) => b.type === 'text');
+      const finalText = textBlocks.map((b) => b.text).join('\n');
+      messages.push({ role: 'assistant', content: response.content });
+
+      return { response: finalText, actions: [], agents_used: [] };
+    } catch (err) {
+      console.error('Error in orchestrator.setterReply:', err);
+      return { response: 'Disculpe, ha ocurrido un error. Por favor, inténtelo de nuevo más tarde.' };
+    }
   }
 }
 

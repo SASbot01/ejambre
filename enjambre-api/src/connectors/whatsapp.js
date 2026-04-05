@@ -263,24 +263,33 @@ async function processAccumulatedMessages(session, chatId, messages) {
     await waitForRateLimit();
     const sessionId = `wa-${clientId?.slice(0,8)}-${chatId}`;
 
-    // Build rich context
-    let ctx = '';
-    if (setterConfig.docs) ctx += `[Product/Company Knowledge:\n${setterConfig.docs.slice(0, 2000)}]\n`;
-    if (setterConfig.message) ctx += `[Setter Instructions: ${setterConfig.message}]\n`;
-    if (crmContact) {
-      ctx += `[Contact: ${crmContact.name || 'Unknown'}${crmContact.notes ? ', Notes: ' + crmContact.notes : ''}]\n`;
-      if (crmContact.files?.length > 0) {
-        const fileCtx = await extractFileContext(crmContact.files);
-        if (fileCtx) ctx += `[Documents:\n${fileCtx}]\n`;
+    // System prompt estático (cacheable): instrucciones + docs + contacto
+    // Los archivos del contacto se cachean por sesión para no re-extraerlos cada mensaje
+    if (!session.fileCtxCache) session.fileCtxCache = new Map();
+    let fileCtx = '';
+    if (crmContact?.files?.length > 0) {
+      const cacheKey = `${crmContact.id}`;
+      if (session.fileCtxCache.has(cacheKey)) {
+        fileCtx = session.fileCtxCache.get(cacheKey);
+      } else {
+        fileCtx = await extractFileContext(crmContact.files);
+        session.fileCtxCache.set(cacheKey, fileCtx);
       }
     }
-    const history = getHistory(session, chatId);
-    if (history.length > 1) {
-      const recent = history.slice(-10, -1).map(h => `${h.role === 'user' ? 'Contact' : 'Setter'}: ${h.content}`).join('\n');
-      ctx += `[Conversation:\n${recent}]\n`;
-    }
 
-    const result = await orchestrator.process(ctx + '\n' + combinedBody, sessionId);
+    const systemParts = [
+      'Eres un setter de ventas profesional. Respondes en español, con tono cercano y conciso. No inventes datos.',
+    ];
+    if (setterConfig.message) systemParts.push(`Instrucciones:\n${setterConfig.message}`);
+    if (setterConfig.docs) systemParts.push(`Conocimiento del producto/empresa:\n${setterConfig.docs.slice(0, 2000)}`);
+    if (crmContact) {
+      systemParts.push(`Contacto actual: ${crmContact.name || 'Desconocido'}${crmContact.notes ? ' — Notas: ' + crmContact.notes : ''}`);
+    }
+    if (fileCtx) systemParts.push(`Documentos del contacto:\n${fileCtx}`);
+    const staticSystem = systemParts.join('\n\n');
+
+    // Solo el mensaje nuevo va en el user turn — el historial lo gestiona el orchestrator
+    const result = await orchestrator.setterReply(staticSystem, combinedBody, sessionId);
     const response = result.response || 'Sin respuesta.';
 
     // Human-like delay
