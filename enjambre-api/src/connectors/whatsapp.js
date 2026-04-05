@@ -138,6 +138,64 @@ async function saveCrmMessage(contactId, channel, direction, senderName, content
   }
 }
 
+// Agent conversations cache: chatId -> conversationId
+const agentConvCache = new Map();
+
+async function getOrCreateAgentConversation(chatId, contactName, senderPhone) {
+  if (!supabase || !sessionOwnerId) return null;
+  if (agentConvCache.has(chatId)) return agentConvCache.get(chatId);
+  try {
+    // Look for existing conversation by title pattern
+    const title = `WhatsApp: ${contactName || senderPhone}`;
+    const { data: existing } = await supabase
+      .from('agent_conversations')
+      .select('id')
+      .eq('client_id', sessionOwnerId)
+      .eq('title', title)
+      .limit(1);
+    if (existing?.length > 0) {
+      agentConvCache.set(chatId, existing[0].id);
+      return existing[0].id;
+    }
+    // Create new conversation
+    const { data: created } = await supabase
+      .from('agent_conversations')
+      .insert({
+        client_id: sessionOwnerId,
+        title,
+        context: JSON.stringify({ channel: 'whatsapp', stage: 'new', phone: senderPhone, lastMessage: '' }),
+      })
+      .select('id')
+      .single();
+    if (created) {
+      agentConvCache.set(chatId, created.id);
+      return created.id;
+    }
+  } catch (err) {
+    console.error('[WhatsApp] Error creating agent conversation:', err.message);
+  }
+  return null;
+}
+
+async function saveAgentMessage(conversationId, role, content) {
+  if (!supabase || !sessionOwnerId || !conversationId) return;
+  try {
+    await supabase.from('agent_messages').insert({
+      conversation_id: conversationId,
+      client_id: sessionOwnerId,
+      role,
+      content,
+    });
+    // Update conversation timestamp and lastMessage
+    await supabase.from('agent_conversations').update({
+      updated_at: new Date().toISOString(),
+      context: JSON.stringify({ channel: 'whatsapp', stage: 'contacted', lastMessage: content.slice(0, 100) }),
+    }).eq('id', conversationId);
+  } catch (err) {
+    console.error('[WhatsApp] Error saving agent message:', err.message);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Forward to central group
 // ---------------------------------------------------------------------------
@@ -172,10 +230,14 @@ async function processAccumulatedMessages(chatId, messages) {
   // Add to conversation history
   addToHistory(chatId, 'user', combinedBody);
 
-  // Persist inbound message to CRM
+  // Persist inbound message to CRM + agent conversations
   const crmContact = await findCrmContact(last.senderNumber).catch(() => null);
   if (crmContact) {
     saveCrmMessage(crmContact.id, 'whatsapp', 'inbound', last.senderName, combinedBody).catch(() => {});
+  }
+  const agentConvId = await getOrCreateAgentConversation(chatId, last.senderName, last.senderNumber).catch(() => null);
+  if (agentConvId) {
+    saveAgentMessage(agentConvId, 'user', combinedBody).catch(() => {});
   }
 
   try {
@@ -221,9 +283,12 @@ async function processAccumulatedMessages(chatId, messages) {
     }
     console.log(`[WhatsApp] -> ${last.chatName}: ${response.slice(0, 100)}...`);
 
-    // Persist outbound message to CRM
+    // Persist outbound message to CRM + agent conversations
     if (crmContact) {
       saveCrmMessage(crmContact.id, 'whatsapp', 'outbound', 'AI Setter', response).catch(() => {});
+    }
+    if (agentConvId) {
+      saveAgentMessage(agentConvId, 'assistant', response).catch(() => {});
     }
 
     // Forward to group (async, skip if message came from group)
