@@ -1,5 +1,6 @@
 // ============================================
 // Conector: WhatsApp Agent (whatsapp-web.js)
+// Multi-session: cada clientId tiene su propia sesión
 // ============================================
 
 import pkg from 'whatsapp-web.js';
@@ -13,29 +14,24 @@ import { supabase } from '../config/database.js';
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
-const WA_ALLOWED_NUMBERS = (process.env.WA_ALLOWED_NUMBERS || '').split(',').map(s => s.trim()).filter(Boolean);
 const WA_GROUP_ID = process.env.WA_GROUP_ID || '';
 const WA_WHITELIST_GROUPS = (process.env.WA_WHITELIST_GROUPS || '').split(',').map(s => s.trim()).filter(Boolean);
 const WA_BOT_PREFIX = process.env.WA_BOT_PREFIX || '!bw';
 const WA_DEBOUNCE_MS = parseInt(process.env.WA_DEBOUNCE_MS, 10) || 10000;
-
-// ---------------------------------------------------------------------------
-// State
-// ---------------------------------------------------------------------------
-let waClient = null;
-let currentQR = null;
-let isReady = false;
-let sessionOwnerId = process.env.WA_DEFAULT_CLIENT_ID || null; // which clientId owns the current session
-const conversations = new Map(); // chatId -> { messages[], lastActivity }
+const WA_MAX_SESSIONS = parseInt(process.env.WA_MAX_SESSIONS, 10) || 5;
+const WA_DEFAULT_CLIENT_ID = process.env.WA_DEFAULT_CLIENT_ID || null;
+const WA_AUTH_BASE = '/app/.wwebjs_auth';
 const MAX_HISTORY = 20;
 
-// Debounce state
-const debounceTimers = new Map();
-const pendingMessages = new Map();
+// ---------------------------------------------------------------------------
+// Multi-session state
+// ---------------------------------------------------------------------------
+// sessions: Map<clientId, { client, isReady, currentQR, conversations, debounceTimers, pendingMessages, agentConvCache, setterConfigCache, setterConfigLastFetch }>
+const sessions = new Map();
 
-// Simple rate limiter
+// Rate limiter (shared)
 let apiCallTimestamps = [];
-const RATE_LIMIT = 20; // per minute
+const RATE_LIMIT = 20;
 
 async function waitForRateLimit() {
   const now = Date.now();
@@ -47,56 +43,39 @@ async function waitForRateLimit() {
   apiCallTimestamps.push(Date.now());
 }
 
+function getSession(clientId) {
+  return sessions.get(clientId) || null;
+}
+
+function createSessionState(clientId) {
+  return {
+    client: null,
+    isReady: false,
+    currentQR: null,
+    conversations: new Map(),
+    debounceTimers: new Map(),
+    pendingMessages: new Map(),
+    agentConvCache: new Map(),
+    setterConfigCache: null,
+    setterConfigLastFetch: 0,
+    clientId,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
 function randomDelay() {
-  const min = 60_000;  // 1 min
-  const max = 300_000; // 5 min
+  const min = 60_000;
+  const max = 300_000;
   return Math.floor(Math.random() * (max - min + 1)) + min;
-}
-
-function isAllowedNumber(phone) {
-  if (WA_ALLOWED_NUMBERS.length === 0) return true;
-  const clean = phone.replace(/\D/g, '');
-  return WA_ALLOWED_NUMBERS.some(n => clean.includes(n) || n.includes(clean));
-}
-
-function isGroupAllowed(chatId) {
-  if (chatId === WA_GROUP_ID) return true;
-  if (WA_WHITELIST_GROUPS.length > 0 && WA_WHITELIST_GROUPS.includes(chatId)) return true;
-  return false;
-}
-
-function getSessionId(chatId) {
-  return `whatsapp-${chatId}`;
-}
-
-function addToHistory(chatId, role, content) {
-  if (!conversations.has(chatId)) {
-    conversations.set(chatId, { messages: [], lastActivity: Date.now() });
-  }
-  const conv = conversations.get(chatId);
-  conv.messages.push({ role, content });
-  conv.lastActivity = Date.now();
-  if (conv.messages.length > MAX_HISTORY) {
-    conv.messages = conv.messages.slice(-MAX_HISTORY);
-  }
-}
-
-function getHistory(chatId) {
-  return conversations.get(chatId)?.messages || [];
 }
 
 function splitMessage(text, maxLength = 4000) {
   const chunks = [];
   let remaining = text;
   while (remaining.length > 0) {
-    if (remaining.length <= maxLength) {
-      chunks.push(remaining);
-      break;
-    }
+    if (remaining.length <= maxLength) { chunks.push(remaining); break; }
     let cutIndex = remaining.lastIndexOf('\n', maxLength);
     if (cutIndex === -1 || cutIndex < maxLength / 2) cutIndex = maxLength;
     chunks.push(remaining.slice(0, cutIndex));
@@ -105,47 +84,59 @@ function splitMessage(text, maxLength = 4000) {
   return chunks;
 }
 
-// ---------------------------------------------------------------------------
-// Setter config (from Supabase)
-// ---------------------------------------------------------------------------
-let setterConfigCache = null;
-let setterConfigLastFetch = 0;
+function addToHistory(session, chatId, role, content) {
+  if (!session.conversations.has(chatId)) {
+    session.conversations.set(chatId, { messages: [], lastActivity: Date.now() });
+  }
+  const conv = session.conversations.get(chatId);
+  conv.messages.push({ role, content });
+  conv.lastActivity = Date.now();
+  if (conv.messages.length > MAX_HISTORY) conv.messages = conv.messages.slice(-MAX_HISTORY);
+}
 
-async function getSetterConfig() {
-  if (!supabase || !sessionOwnerId) return { enabled: false, message: '' };
-  // Cache for 30 seconds
-  if (setterConfigCache && Date.now() - setterConfigLastFetch < 30000) return setterConfigCache;
+function getHistory(session, chatId) {
+  return session.conversations.get(chatId)?.messages || [];
+}
+
+// ---------------------------------------------------------------------------
+// Setter config (per-client, cached 30s)
+// ---------------------------------------------------------------------------
+async function getSetterConfig(session) {
+  if (!supabase || !session.clientId) return { enabled: false, message: '', docs: '' };
+  if (session.setterConfigCache && Date.now() - session.setterConfigLastFetch < 30000) return session.setterConfigCache;
   try {
     const { data } = await supabase
       .from('whatsapp_config')
-      .select('setter_enabled, setter_message')
-      .eq('client_id', sessionOwnerId)
+      .select('setter_enabled, setter_message, setter_docs')
+      .eq('client_id', session.clientId)
       .limit(1)
       .single();
-    setterConfigCache = { enabled: !!data?.setter_enabled, message: data?.setter_message || '' };
-    setterConfigLastFetch = Date.now();
-    return setterConfigCache;
+    session.setterConfigCache = {
+      enabled: !!data?.setter_enabled,
+      message: data?.setter_message || '',
+      docs: data?.setter_docs || '',
+    };
+    session.setterConfigLastFetch = Date.now();
+    return session.setterConfigCache;
   } catch {
-    return { enabled: false, message: '' };
+    return { enabled: false, message: '', docs: '' };
   }
 }
 
 // ---------------------------------------------------------------------------
-// Persist messages to CRM (Supabase)
+// CRM persistence (Supabase)
 // ---------------------------------------------------------------------------
-async function findCrmContact(phone) {
-  if (!supabase || !sessionOwnerId) return null;
+async function findCrmContact(clientId, phone) {
+  if (!supabase || !clientId) return null;
   const clean = phone.replace(/\D/g, '');
-  // Search by phone or whatsapp field
   const { data } = await supabase
     .from('crm_contacts')
     .select('id, client_id, name, notes')
-    .eq('client_id', sessionOwnerId)
+    .eq('client_id', clientId)
     .or(`phone.ilike.%${clean}%,whatsapp.ilike.%${clean}%`)
     .limit(1);
   const contact = data?.[0] || null;
   if (contact) {
-    // Fetch attached files for context
     try {
       const { data: files } = await supabase
         .from('crm_files')
@@ -158,480 +149,412 @@ async function findCrmContact(phone) {
   return contact;
 }
 
-async function saveCrmMessage(contactId, channel, direction, senderName, content) {
-  if (!supabase || !sessionOwnerId) return;
+async function saveCrmMessage(clientId, contactId, channel, direction, senderName, content) {
+  if (!supabase || !clientId) return;
   try {
     await supabase.from('crm_messages').insert({
-      client_id: sessionOwnerId,
-      contact_id: contactId,
-      channel,
-      direction,
-      sender_name: senderName,
-      content,
-      status: 'sent',
+      client_id: clientId, contact_id: contactId, channel, direction,
+      sender_name: senderName, content, status: 'sent',
     });
   } catch (err) {
-    console.error('[WhatsApp] Error saving CRM message:', err.message);
+    console.error('[WA] Error saving CRM message:', err.message);
   }
 }
 
-// Agent conversations cache: chatId -> conversationId
-const agentConvCache = new Map();
-
-async function getOrCreateAgentConversation(chatId, contactName, senderPhone) {
-  if (!supabase || !sessionOwnerId) return null;
-  if (agentConvCache.has(chatId)) return agentConvCache.get(chatId);
+async function getOrCreateAgentConversation(session, chatId, contactName, senderPhone) {
+  if (!supabase || !session.clientId) return null;
+  if (session.agentConvCache.has(chatId)) return session.agentConvCache.get(chatId);
   try {
-    // Look for existing conversation by title pattern
     const title = `WhatsApp: ${contactName || senderPhone}`;
     const { data: existing } = await supabase
-      .from('agent_conversations')
-      .select('id')
-      .eq('client_id', sessionOwnerId)
-      .eq('title', title)
-      .limit(1);
+      .from('agent_conversations').select('id')
+      .eq('client_id', session.clientId).eq('title', title).limit(1);
     if (existing?.length > 0) {
-      agentConvCache.set(chatId, existing[0].id);
+      session.agentConvCache.set(chatId, existing[0].id);
       return existing[0].id;
     }
-    // Create new conversation
     const { data: created } = await supabase
       .from('agent_conversations')
-      .insert({
-        client_id: sessionOwnerId,
-        title,
-        context: JSON.stringify({ channel: 'whatsapp', stage: 'new', phone: senderPhone, lastMessage: '' }),
-      })
-      .select('id')
-      .single();
-    if (created) {
-      agentConvCache.set(chatId, created.id);
-      return created.id;
-    }
-  } catch (err) {
-    console.error('[WhatsApp] Error creating agent conversation:', err.message);
-  }
+      .insert({ client_id: session.clientId, title, context: JSON.stringify({ channel: 'whatsapp', stage: 'new', phone: senderPhone }) })
+      .select('id').single();
+    if (created) { session.agentConvCache.set(chatId, created.id); return created.id; }
+  } catch (err) { console.error('[WA] Error agent conv:', err.message); }
   return null;
 }
 
-async function saveAgentMessage(conversationId, role, content) {
-  if (!supabase || !sessionOwnerId || !conversationId) return;
+async function saveAgentMessage(clientId, conversationId, role, content) {
+  if (!supabase || !clientId || !conversationId) return;
   try {
-    await supabase.from('agent_messages').insert({
-      conversation_id: conversationId,
-      client_id: sessionOwnerId,
-      role,
-      content,
-    });
-    // Update conversation timestamp and lastMessage
+    await supabase.from('agent_messages').insert({ conversation_id: conversationId, client_id: clientId, role, content });
     await supabase.from('agent_conversations').update({
       updated_at: new Date().toISOString(),
       context: JSON.stringify({ channel: 'whatsapp', stage: 'contacted', lastMessage: content.slice(0, 100) }),
     }).eq('id', conversationId);
-  } catch (err) {
-    console.error('[WhatsApp] Error saving agent message:', err.message);
+  } catch (err) { console.error('[WA] Error agent msg:', err.message); }
+}
+
+// ---------------------------------------------------------------------------
+// File content extraction for AI context
+// ---------------------------------------------------------------------------
+async function extractFileContext(files) {
+  if (!files || files.length === 0) return '';
+  const texts = [];
+  for (const f of files.slice(0, 3)) {
+    if (!f.file_url) continue;
+    try {
+      if (f.file_type === 'application/pdf' || f.file_name?.endsWith('.pdf')) {
+        const res = await fetch(f.file_url);
+        const buffer = await res.arrayBuffer();
+        const { default: pdfParse } = await import('pdf-parse/lib/pdf-parse.js');
+        const pdf = await pdfParse(Buffer.from(buffer));
+        texts.push(`[${f.file_name}]: ${pdf.text.slice(0, 1500)}`);
+      } else if (/\.(txt|md|csv)$/i.test(f.file_name || '')) {
+        const res = await fetch(f.file_url);
+        const text = await res.text();
+        texts.push(`[${f.file_name}]: ${text.slice(0, 1500)}`);
+      } else {
+        texts.push(`[${f.file_name}]`);
+      }
+    } catch { texts.push(`[${f.file_name}]`); }
   }
+  return texts.join('\n');
 }
 
 // ---------------------------------------------------------------------------
 // Forward to central group
 // ---------------------------------------------------------------------------
-async function forwardToGroup(senderName, chatName, originalMessage, botReply) {
-  if (!WA_GROUP_ID || !waClient || !isReady) return;
-  const lines = [
-    '\u2501'.repeat(18),
-    `De: ${senderName}`,
-    `Chat: ${chatName}`,
-    '',
-    `Mensaje: ${originalMessage}`,
-    '',
-    `Respuesta: ${botReply}`,
-    '\u2501'.repeat(18),
-  ];
+async function forwardToGroup(session, senderName, chatName, originalMessage, botReply) {
+  if (!WA_GROUP_ID || !session.client || !session.isReady) return;
   try {
-    await waClient.sendMessage(WA_GROUP_ID, lines.join('\n'));
-  } catch (err) {
-    console.error('[WhatsApp] Error reenviando al grupo:', err.message);
-  }
+    await session.client.sendMessage(WA_GROUP_ID, [
+      '━'.repeat(18), `De: ${senderName}`, `Chat: ${chatName}`, '',
+      `Mensaje: ${originalMessage}`, '', `Respuesta: ${botReply}`, '━'.repeat(18),
+    ].join('\n'));
+  } catch {}
 }
 
 // ---------------------------------------------------------------------------
-// Process accumulated messages (after debounce)
+// Process accumulated messages
 // ---------------------------------------------------------------------------
-async function processAccumulatedMessages(chatId, messages) {
+async function processAccumulatedMessages(session, chatId, messages) {
   if (messages.length === 0) return;
-
   const last = messages[messages.length - 1];
   const combinedBody = messages.map(m => m.body).join('\n');
+  const clientId = session.clientId;
 
-  // Add to conversation history
-  addToHistory(chatId, 'user', combinedBody);
+  addToHistory(session, chatId, 'user', combinedBody);
 
-  // Always persist inbound message to CRM + agent conversations
-  const crmContact = await findCrmContact(last.senderNumber).catch(() => null);
-  if (crmContact) {
-    saveCrmMessage(crmContact.id, 'whatsapp', 'inbound', last.senderName, combinedBody).catch(() => {});
-  }
-  const agentConvId = await getOrCreateAgentConversation(chatId, last.senderName, last.senderNumber).catch(() => null);
-  if (agentConvId) {
-    saveAgentMessage(agentConvId, 'user', combinedBody).catch(() => {});
-  }
+  // Persist inbound
+  const crmContact = await findCrmContact(clientId, last.senderNumber).catch(() => null);
+  if (crmContact) saveCrmMessage(clientId, crmContact.id, 'whatsapp', 'inbound', last.senderName, combinedBody).catch(() => {});
+  const agentConvId = await getOrCreateAgentConversation(session, chatId, last.senderName, last.senderNumber).catch(() => null);
+  if (agentConvId) saveAgentMessage(clientId, agentConvId, 'user', combinedBody).catch(() => {});
 
-  console.log(`[WhatsApp] <- ${last.chatName} (${last.senderName}): ${combinedBody.slice(0, 80)}`);
+  console.log(`[WA:${clientId?.slice(0,8)}] <- ${last.chatName}: ${combinedBody.slice(0, 80)}`);
 
-  // Check if auto-setter is enabled
-  const setterConfig = await getSetterConfig();
+  // Check setter config
+  const setterConfig = await getSetterConfig(session);
   if (!setterConfig.enabled && !last.isGroupCommand) {
-    console.log(`[WhatsApp] Setter disabled — message saved but not auto-responding to ${last.chatName}`);
+    console.log(`[WA:${clientId?.slice(0,8)}] Setter off — saved only`);
     return;
   }
 
   try {
     await waitForRateLimit();
+    const sessionId = `wa-${clientId?.slice(0,8)}-${chatId}`;
 
-    const sessionId = getSessionId(chatId);
-
-    // Build prompt with setter instructions + CRM context
-    let systemContext = '';
-    if (setterConfig.message) {
-      systemContext += `[Setter Instructions: ${setterConfig.message}]\n`;
-    }
+    // Build rich context
+    let ctx = '';
+    if (setterConfig.docs) ctx += `[Product/Company Knowledge:\n${setterConfig.docs.slice(0, 2000)}]\n`;
+    if (setterConfig.message) ctx += `[Setter Instructions: ${setterConfig.message}]\n`;
     if (crmContact) {
-      systemContext += `[CRM Contact: ${crmContact.name || 'Unknown'}${crmContact.notes ? ', Notes: ' + crmContact.notes : ''}]\n`;
+      ctx += `[Contact: ${crmContact.name || 'Unknown'}${crmContact.notes ? ', Notes: ' + crmContact.notes : ''}]\n`;
       if (crmContact.files?.length > 0) {
-        const fileList = crmContact.files.map(f => f.file_name).join(', ');
-        systemContext += `[Client files/docs: ${fileList}]\n`;
+        const fileCtx = await extractFileContext(crmContact.files);
+        if (fileCtx) ctx += `[Documents:\n${fileCtx}]\n`;
       }
     }
-    // Get recent conversation history for continuity
-    const history = getHistory(chatId);
+    const history = getHistory(session, chatId);
     if (history.length > 1) {
-      const recentMsgs = history.slice(-10, -1).map(h => `${h.role === 'user' ? 'Contact' : 'Setter'}: ${h.content}`).join('\n');
-      systemContext += `[Recent conversation:\n${recentMsgs}]\n`;
+      const recent = history.slice(-10, -1).map(h => `${h.role === 'user' ? 'Contact' : 'Setter'}: ${h.content}`).join('\n');
+      ctx += `[Conversation:\n${recent}]\n`;
     }
-    const prompt = systemContext ? systemContext + '\n' + combinedBody : combinedBody;
 
-    const result = await orchestrator.process(prompt, sessionId);
-    const response = result.response || 'Sin respuesta del Cerebro.';
+    const result = await orchestrator.process(ctx + '\n' + combinedBody, sessionId);
+    const response = result.response || 'Sin respuesta.';
 
-    // Simulate human behavior (skip for bot group)
+    // Human-like delay
     if (!last.isGroupCommand) {
       const delay = randomDelay();
-      const mins = (delay / 60_000).toFixed(1);
-      console.log(`[WhatsApp] Setter waiting ${mins} min before replying to ${last.chatName}...`);
+      console.log(`[WA:${clientId?.slice(0,8)}] Waiting ${(delay/60000).toFixed(1)}m...`);
       await new Promise(r => setTimeout(r, delay));
-
-      // Send seen + typing
       try {
-        const chat = await waClient.getChatById(chatId);
+        const chat = await session.client.getChatById(chatId);
         await chat.sendSeen();
-        const typingTime = Math.floor(Math.random() * 3000) + 2000;
         await chat.sendStateTyping();
-        await new Promise(r => setTimeout(r, typingTime));
+        await new Promise(r => setTimeout(r, Math.random() * 3000 + 2000));
         await chat.clearState();
       } catch {}
     }
 
-    // Store bot reply in history
-    addToHistory(chatId, 'assistant', response);
+    addToHistory(session, chatId, 'assistant', response);
+    for (const chunk of splitMessage(response)) await session.client.sendMessage(chatId, chunk);
+    console.log(`[WA:${clientId?.slice(0,8)}] -> ${last.chatName}: ${response.slice(0, 80)}...`);
 
-    // Send reply (split if too long)
-    const chunks = splitMessage(response);
-    for (const chunk of chunks) {
-      await waClient.sendMessage(chatId, chunk);
-    }
-    console.log(`[WhatsApp] Setter -> ${last.chatName}: ${response.slice(0, 100)}...`);
+    // Persist outbound
+    if (crmContact) saveCrmMessage(clientId, crmContact.id, 'whatsapp', 'outbound', 'AI Setter', response).catch(() => {});
+    if (agentConvId) saveAgentMessage(clientId, agentConvId, 'assistant', response).catch(() => {});
+    if (!last.isGroupCommand) forwardToGroup(session, last.senderName, last.chatName, combinedBody, response).catch(() => {});
 
-    // Persist outbound message to CRM + agent conversations
-    if (crmContact) {
-      saveCrmMessage(crmContact.id, 'whatsapp', 'outbound', 'AI Setter', response).catch(() => {});
-    }
-    if (agentConvId) {
-      saveAgentMessage(agentConvId, 'assistant', response).catch(() => {});
-    }
-
-    // Forward to group (async, skip if message came from group)
-    if (!last.isGroupCommand) {
-      forwardToGroup(last.senderName, last.chatName, combinedBody, response).catch(() => {});
-    }
-
-    // Publish event
-    eventBus.publish('chat.whatsapp', 'whatsapp', {
-      user: last.senderName,
-      phone: last.senderNumber,
-      message_length: combinedBody.length,
-      agents_used: result.agents_used || [],
-    });
+    eventBus.publish('chat.whatsapp', 'whatsapp', { user: last.senderName, phone: last.senderNumber, clientId });
   } catch (err) {
-    console.error('[WhatsApp] Error procesando mensajes:', err.message);
+    console.error(`[WA:${clientId?.slice(0,8)}] Error:`, err.message);
   }
 }
 
 // ---------------------------------------------------------------------------
-// Message handler
+// Message handler (per-session)
 // ---------------------------------------------------------------------------
-async function handleMessage(message) {
-  try {
-    // Ignore status broadcasts and empty messages
-    if (message.from === 'status@broadcast') return;
-    if (!message.body || message.body.trim() === '') return;
-    if (message.fromMe) return;
+function createMessageHandler(session) {
+  return async function handleMessage(message) {
+    try {
+      if (message.from === 'status@broadcast') return;
+      if (!message.body || message.body.trim() === '') return;
+      if (message.fromMe) return;
 
-    const chatId = message.from;
-    const isGroup = chatId.endsWith('@g.us');
-    const isBotGroup = chatId === WA_GROUP_ID;
+      const chatId = message.from;
+      const isGroup = chatId.endsWith('@g.us');
+      const isBotGroup = chatId === WA_GROUP_ID;
 
-    // Groups: only respond if whitelisted
-    if (isGroup && !isGroupAllowed(chatId)) return;
-
-    // Bot group: only respond to prefix command
-    if (isBotGroup) {
-      const body = message.body.trim().toLowerCase();
-      if (!body.startsWith(WA_BOT_PREFIX.toLowerCase())) return;
-    }
-
-    const contact = await message.getContact();
-    const chat = await message.getChat();
-    const senderName = contact.pushname || contact.name || 'Desconocido';
-    const senderNumber = contact.number || message.from;
-    const chatName = chat.name || senderName;
-
-    // Check allowed numbers (skip for group commands)
-    if (!isGroup && !isAllowedNumber(senderNumber)) {
-      console.log(`[WhatsApp] Numero no autorizado: ${senderNumber}`);
-      return;
-    }
-
-    // Strip bot prefix
-    let messageBody = message.body;
-    if (isBotGroup && messageBody.trim().toLowerCase().startsWith(WA_BOT_PREFIX.toLowerCase())) {
-      messageBody = messageBody.trim().slice(WA_BOT_PREFIX.length).trim();
-      if (!messageBody) messageBody = 'Hola';
-    }
-
-    // Only process text messages
-    if (message.type !== 'chat') {
-      await waClient.sendMessage(chatId, 'Por ahora solo proceso mensajes de texto.');
-      return;
-    }
-
-    console.log(`[WhatsApp] <- ${chatName} (${senderName}): ${messageBody.slice(0, 100)}`);
-
-    // Special commands
-    if (messageBody.toLowerCase() === 'reset') {
-      conversations.delete(chatId);
-      orchestrator.clearSession(getSessionId(chatId));
-      await waClient.sendMessage(chatId, 'Sesion reiniciada.');
-      return;
-    }
-
-    if (messageBody.toLowerCase() === 'status') {
-      const status = await getSystemStatus();
-      await waClient.sendMessage(chatId, status);
-      return;
-    }
-
-    // Debounce: accumulate messages before processing
-    if (!pendingMessages.has(chatId)) {
-      pendingMessages.set(chatId, []);
-    }
-    pendingMessages.get(chatId).push({
-      body: messageBody,
-      senderName,
-      senderNumber,
-      chatName,
-      isGroupCommand: isBotGroup,
-    });
-
-    // Clear existing timer
-    if (debounceTimers.has(chatId)) {
-      clearTimeout(debounceTimers.get(chatId));
-    }
-
-    // Set debounce timer
-    debounceTimers.set(chatId, setTimeout(async () => {
-      debounceTimers.delete(chatId);
-      const msgs = pendingMessages.get(chatId) || [];
-      pendingMessages.delete(chatId);
-      await processAccumulatedMessages(chatId, msgs);
-    }, WA_DEBOUNCE_MS));
-
-  } catch (err) {
-    console.error('[WhatsApp] Error en handler:', err.message);
-  }
-}
-
-// ---------------------------------------------------------------------------
-// System status
-// ---------------------------------------------------------------------------
-async function getSystemStatus() {
-  const lines = ['*Enjambre - Estado del Sistema*', new Date().toLocaleString('es-ES'), ''];
-  try {
-    const { query } = await import('../config/database.js');
-    const agents = await query('SELECT * FROM agent_status');
-    if (agents.length > 0) {
-      lines.push('*Agentes:*');
-      for (const a of agents) {
-        const online = Date.now() - new Date(a.last_heartbeat).getTime() < 120_000;
-        lines.push(`${online ? 'ON' : 'OFF'} ${a.agent_name}`);
+      if (isGroup && !isBotGroup && !WA_WHITELIST_GROUPS.includes(chatId)) return;
+      if (isBotGroup) {
+        if (!message.body.trim().toLowerCase().startsWith(WA_BOT_PREFIX.toLowerCase())) return;
       }
+
+      const contact = await message.getContact();
+      const chat = await message.getChat();
+      const senderName = contact.pushname || contact.name || 'Desconocido';
+      const senderNumber = contact.number || message.from;
+      const chatName = chat.name || senderName;
+
+      let messageBody = message.body;
+      if (isBotGroup && messageBody.trim().toLowerCase().startsWith(WA_BOT_PREFIX.toLowerCase())) {
+        messageBody = messageBody.trim().slice(WA_BOT_PREFIX.length).trim() || 'Hola';
+      }
+
+      if (message.type !== 'chat') return;
+
+      // Special commands
+      if (messageBody.toLowerCase() === 'reset') {
+        session.conversations.delete(chatId);
+        orchestrator.clearSession(`wa-${session.clientId?.slice(0,8)}-${chatId}`);
+        await session.client.sendMessage(chatId, 'Sesion reiniciada.');
+        return;
+      }
+
+      // Debounce
+      if (!session.pendingMessages.has(chatId)) session.pendingMessages.set(chatId, []);
+      session.pendingMessages.get(chatId).push({ body: messageBody, senderName, senderNumber, chatName, isGroupCommand: isBotGroup });
+
+      if (session.debounceTimers.has(chatId)) clearTimeout(session.debounceTimers.get(chatId));
+      session.debounceTimers.set(chatId, setTimeout(async () => {
+        session.debounceTimers.delete(chatId);
+        const msgs = session.pendingMessages.get(chatId) || [];
+        session.pendingMessages.delete(chatId);
+        await processAccumulatedMessages(session, chatId, msgs);
+      }, WA_DEBOUNCE_MS));
+    } catch (err) {
+      console.error(`[WA:${session.clientId?.slice(0,8)}] Handler error:`, err.message);
     }
-    const stats = await query(
-      `SELECT COUNT(*) as total, COUNT(*) FILTER (WHERE created_at >= CURRENT_DATE) as hoy FROM leads`
-    );
-    if (stats[0]) {
-      lines.push('', `*Leads:* ${stats[0].total} total | ${stats[0].hoy} hoy`);
-    }
-  } catch {
-    lines.push('No se pudo obtener estado de la BD');
-  }
-  return lines.join('\n');
+  };
 }
 
 // ---------------------------------------------------------------------------
-// Initialize client
+// Create WhatsApp client for a specific clientId
 // ---------------------------------------------------------------------------
-function createWhatsAppClient() {
+function createClientForSession(session) {
+  const clientId = session.clientId;
+  const authPath = clientId ? `${WA_AUTH_BASE}/${clientId}` : WA_AUTH_BASE;
+
   const puppeteerOpts = {
     headless: true,
     args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
   };
-  // Use system Chromium in Docker (set via env PUPPETEER_EXECUTABLE_PATH)
   const chromePath = process.env.PUPPETEER_EXECUTABLE_PATH;
-  if (chromePath) {
-    puppeteerOpts.executablePath = chromePath;
-  }
+  if (chromePath) puppeteerOpts.executablePath = chromePath;
 
   const client = new Client({
-    authStrategy: new LocalAuth({ dataPath: '/app/.wwebjs_auth' }),
+    authStrategy: new LocalAuth({ dataPath: authPath, clientId: clientId || 'default' }),
     puppeteer: puppeteerOpts,
   });
 
   client.on('qr', (qr) => {
-    currentQR = qr;
-    console.log('[WhatsApp] Escanea este codigo QR con WhatsApp:');
+    session.currentQR = qr;
+    console.log(`[WA:${clientId?.slice(0,8)}] QR generated — scan to connect`);
     qrcode.generate(qr, { small: true });
   });
 
   client.on('authenticated', () => {
-    currentQR = null;
-    console.log('[WhatsApp] Autenticado correctamente');
+    session.currentQR = null;
+    console.log(`[WA:${clientId?.slice(0,8)}] Authenticated`);
   });
 
   client.on('ready', async () => {
-    isReady = true;
-    currentQR = null;
-    console.log('[WhatsApp] Cliente listo - escuchando mensajes');
-
-    // Log available chats for finding group IDs
-    try {
-      const chats = await client.getChats();
-      const groups = chats.filter(c => c.isGroup);
-      if (groups.length > 0) {
-        console.log('[WhatsApp] Grupos disponibles:');
-        groups.forEach(g => console.log(`  [GRUPO] ${g.name} -> ${g.id._serialized}`));
-      }
-    } catch {}
-
-    eventBus.publish('connector.started', 'whatsapp', { type: 'whatsapp-web' });
+    session.isReady = true;
+    session.currentQR = null;
+    console.log(`[WA:${clientId?.slice(0,8)}] Ready — listening for messages`);
+    // Update whatsapp_config.connected = true
+    if (supabase && clientId) {
+      try {
+        const { data: existing } = await supabase.from('whatsapp_config').select('id').eq('client_id', clientId).limit(1);
+        if (existing?.length > 0) {
+          await supabase.from('whatsapp_config').update({ connected: true, updated_at: new Date().toISOString() }).eq('client_id', clientId);
+        } else {
+          await supabase.from('whatsapp_config').insert({ client_id: clientId, connected: true });
+        }
+      } catch {}
+    }
+    eventBus.publish('connector.started', 'whatsapp', { clientId });
   });
 
-  client.on('auth_failure', (msg) => {
-    console.error('[WhatsApp] Fallo de autenticacion:', msg);
-    isReady = false;
-  });
+  client.on('auth_failure', () => { session.isReady = false; });
 
   client.on('disconnected', (reason) => {
-    console.warn('[WhatsApp] Desconectado:', reason);
-    isReady = false;
-    // Reconnect after 10 seconds
+    console.warn(`[WA:${clientId?.slice(0,8)}] Disconnected: ${reason}`);
+    session.isReady = false;
+    // Update connected = false
+    if (supabase && clientId) {
+      supabase.from('whatsapp_config').update({ connected: false }).eq('client_id', clientId).catch(() => {});
+    }
+    // Reconnect
     setTimeout(() => {
-      console.log('[WhatsApp] Reconectando...');
-      client.initialize().catch(err => {
-        console.error('[WhatsApp] Error reconectando:', err.message);
-      });
+      console.log(`[WA:${clientId?.slice(0,8)}] Reconnecting...`);
+      client.initialize().catch(err => console.error(`[WA:${clientId?.slice(0,8)}] Reconnect error:`, err.message));
     }, 10_000);
   });
 
-  client.on('message', handleMessage);
-
+  client.on('message', createMessageHandler(session));
+  session.client = client;
   return client;
+}
+
+// ---------------------------------------------------------------------------
+// Session management
+// ---------------------------------------------------------------------------
+function startSession(clientId) {
+  if (sessions.has(clientId)) {
+    const existing = sessions.get(clientId);
+    if (existing.isReady) return existing;
+    // Destroy stale session
+    existing.client?.destroy().catch(() => {});
+  }
+  if (sessions.size >= WA_MAX_SESSIONS) {
+    // Evict oldest inactive session
+    let oldest = null;
+    let oldestTime = Infinity;
+    for (const [id, s] of sessions) {
+      const lastAct = Math.max(...[...s.conversations.values()].map(c => c.lastActivity || 0), 0);
+      if (lastAct < oldestTime && id !== clientId) { oldest = id; oldestTime = lastAct; }
+    }
+    if (oldest) {
+      console.log(`[WA] Evicting session ${oldest.slice(0,8)} (max ${WA_MAX_SESSIONS} reached)`);
+      const s = sessions.get(oldest);
+      s.client?.destroy().catch(() => {});
+      sessions.delete(oldest);
+    }
+  }
+
+  const session = createSessionState(clientId);
+  sessions.set(clientId, session);
+  createClientForSession(session);
+  session.client.initialize().catch(err => console.error(`[WA:${clientId?.slice(0,8)}] Init error:`, err.message));
+  return session;
 }
 
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
-
 export function registerWhatsAppRoutes(app) {
-  // API endpoint: get QR code and status (per-client aware)
+
+  // Status
   app.get('/api/whatsapp/status', async (req) => {
-    const requestedClientId = req.query.clientId;
-    const isOwner = !requestedClientId || !sessionOwnerId || sessionOwnerId === requestedClientId;
+    const clientId = req.query.clientId;
+    if (!clientId) {
+      // Return summary of all sessions
+      const all = [];
+      for (const [id, s] of sessions) {
+        all.push({ clientId: id, connected: s.isReady, activeConversations: s.conversations.size });
+      }
+      return { sessions: all, totalSessions: sessions.size, maxSessions: WA_MAX_SESSIONS };
+    }
+    const session = getSession(clientId);
+    if (!session) return { connected: false, qr: null, qrImage: null, activeConversations: 0, sessionOwner: null };
     let qrImage = null;
-    if (currentQR && isOwner) {
-      try {
-        qrImage = await QRCode.toDataURL(currentQR, { width: 280, margin: 2 });
-      } catch {}
+    if (session.currentQR) {
+      try { qrImage = await QRCode.toDataURL(session.currentQR, { width: 280, margin: 2 }); } catch {}
     }
     return {
-      connected: isReady && isOwner,
-      qr: isOwner ? (currentQR || null) : null,
-      qrImage: isOwner ? qrImage : null,
-      activeConversations: conversations.size,
-      sessionOwner: sessionOwnerId || null,
+      connected: session.isReady,
+      qr: session.currentQR || null,
+      qrImage,
+      activeConversations: session.conversations.size,
+      sessionOwner: clientId,
     };
   });
 
-  // API endpoint: send message manually (per-client aware)
+  // Send message
   app.post('/api/whatsapp/send', async (req) => {
-    if (!isReady || !waClient) return { error: 'WhatsApp no conectado' };
     const { to, message, clientId } = req.body;
     if (!to || !message) return { error: 'to y message son requeridos' };
-    if (clientId && sessionOwnerId && clientId !== sessionOwnerId) {
-      return { error: 'Sesion de WhatsApp pertenece a otro cliente' };
-    }
+    if (!clientId) return { error: 'clientId es requerido' };
+    const session = getSession(clientId);
+    if (!session?.isReady) return { error: 'WhatsApp no conectado para este cliente' };
     try {
-      await waClient.sendMessage(to.includes('@') ? to : `${to}@c.us`, message);
+      await session.client.sendMessage(to.includes('@') ? to : `${to}@c.us`, message);
       return { ok: true };
     } catch (err) {
       return { error: err.message };
     }
   });
 
-  // API endpoint: restart/reconnect (per-client aware)
+  // Restart / connect session
   app.post('/api/whatsapp/restart', async (req) => {
     const { clientId } = req.body || {};
+    if (!clientId) return { error: 'clientId es requerido' };
     try {
-      if (waClient) {
-        await waClient.destroy().catch(() => {});
-      }
-      if (clientId) sessionOwnerId = clientId;
-      waClient = createWhatsAppClient();
-      waClient.initialize().catch(err => {
-        console.error('[WhatsApp] Error inicializando:', err.message);
-      });
-      return { ok: true, message: 'Reiniciando - escanea el codigo QR cuando aparezca', sessionOwner: sessionOwnerId };
+      const existing = getSession(clientId);
+      if (existing?.client) await existing.client.destroy().catch(() => {});
+      sessions.delete(clientId);
+      startSession(clientId);
+      return { ok: true, message: 'Session starting — scan QR when ready', sessionOwner: clientId };
     } catch (err) {
       return { error: err.message };
     }
   });
 
-  // Initialize client
-  console.log('[WhatsApp] Iniciando conector whatsapp-web.js...');
-  waClient = createWhatsAppClient();
-  waClient.initialize().catch(err => {
-    console.error('[WhatsApp] Error inicializando:', err.message);
+  // List sessions
+  app.get('/api/whatsapp/sessions', async () => {
+    const list = [];
+    for (const [id, s] of sessions) {
+      list.push({ clientId: id, connected: s.isReady, conversations: s.conversations.size });
+    }
+    return { sessions: list, max: WA_MAX_SESSIONS };
   });
 
-  console.log('[WhatsApp] Rutas registradas: /api/whatsapp/status, /api/whatsapp/send, /api/whatsapp/restart');
+  // Boot default session if configured
+  if (WA_DEFAULT_CLIENT_ID) {
+    console.log(`[WA] Starting default session for ${WA_DEFAULT_CLIENT_ID.slice(0,8)}...`);
+    startSession(WA_DEFAULT_CLIENT_ID);
+  }
+
+  console.log(`[WA] Multi-session enabled (max ${WA_MAX_SESSIONS}). Routes: /api/whatsapp/status, /send, /restart, /sessions`);
 }
 
-export async function sendWhatsAppNotification(phoneNumber, message) {
-  if (!isReady || !waClient) return;
+export async function sendWhatsAppNotification(phoneNumber, message, clientId) {
+  const cid = clientId || WA_DEFAULT_CLIENT_ID;
+  if (!cid) return;
+  const session = getSession(cid);
+  if (!session?.isReady) return;
   const chatId = phoneNumber.includes('@') ? phoneNumber : `${phoneNumber}@c.us`;
-  try {
-    await waClient.sendMessage(chatId, message);
-  } catch (err) {
-    console.error('[WhatsApp] Error enviando notificacion:', err.message);
-  }
+  try { await session.client.sendMessage(chatId, message); } catch {}
 }

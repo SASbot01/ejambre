@@ -1,9 +1,7 @@
 import { orchestrator } from '../agents/orchestrator.js';
 import { eventBus } from '../events/event-bus.js';
 import { query, queryOne } from '../config/database.js';
-import { v4 as uuid } from 'uuid';
 import { authenticate } from '../auth/auth.js';
-import { startDevSession } from '../agents/dev-worker.js';
 import { enrollLead } from '../workers/sequence-worker.js';
 
 export function registerRoutes(app) {
@@ -363,95 +361,6 @@ export function registerRoutes(app) {
     });
 
     return { ok: true, event, source: sourceAgent };
-  });
-
-  // ============================================
-  // DEV AGENT — Developer AI
-  // ============================================
-
-  // Tickets CRUD
-  app.get('/api/dev/tickets', async () => {
-    return query('SELECT * FROM dev_tickets ORDER BY created_at DESC LIMIT 100');
-  });
-
-  app.post('/api/dev/tickets', async (req) => {
-    const { title, description, project, status } = req.body;
-    return queryOne(
-      'INSERT INTO dev_tickets (title, description, project, status) VALUES ($1, $2, $3, $4) RETURNING *',
-      [title, description || null, project || 'general', status || 'pending']
-    );
-  });
-
-  app.put('/api/dev/tickets/:id', async (req) => {
-    const { status, result } = req.body;
-    return queryOne(
-      'UPDATE dev_tickets SET status = COALESCE($1, status), result = COALESCE($2, result), updated_at = NOW() WHERE id = $3 RETURNING *',
-      [status, result, req.params.id]
-    );
-  });
-
-  // Sessions
-  app.get('/api/dev/sessions', async () => {
-    return query('SELECT * FROM dev_sessions ORDER BY created_at DESC LIMIT 20');
-  });
-
-  app.post('/api/dev/sessions', async (req) => {
-    const { duration_hours } = req.body;
-    const session = await queryOne(
-      'INSERT INTO dev_sessions (duration_hours, status) VALUES ($1, $2) RETURNING *',
-      [duration_hours || 2, 'active']
-    );
-
-    // Launch autonomous dev worker in background
-    startDevSession(duration_hours || 2, session.id, eventBus, queryOne).catch(err => {
-      console.error('[DevWorker] Session error:', err.message);
-    });
-
-    return session;
-  });
-
-  // Chat with Dev Agent
-  app.post('/api/dev/chat', async (req) => {
-    const { message, session_id } = req.body;
-    if (!message) return { error: 'message requerido' };
-
-    try {
-      const result = await orchestrator.process(
-        `[DEV AGENT] El usuario te habla como Dev Agent. Tu rol es analizar, optimizar y mejorar los proyectos de BlackWolf (Enjambre, SOC, Dashboard-Ops). ` +
-        `REGLA CRITICA: NUNCA toques datos de clientes, CRM, ventas, leads, ni contactos. Solo codigo, configuracion, rendimiento y seguridad. ` +
-        `Si creas un ticket, responde con JSON {tickets_created: [{title, description, project}]} al final. ` +
-        `Proyectos: Enjambre (/home/s4sf/ejambre), SOC (/home/s4sf/ejambre/soc si existe), Dashboard-Ops (/home/s4sf/ejambre/Dashboard-Ops-). ` +
-        `Mensaje del usuario: ${message}`,
-        `dev-${session_id || 'default'}`
-      );
-
-      // Try to extract tickets from response
-      let tickets_created = [];
-      try {
-        const jsonMatch = result.response?.match(/\{[\s\S]*tickets_created[\s\S]*\}/);
-        if (jsonMatch) {
-          const parsed = JSON.parse(jsonMatch[0]);
-          if (parsed.tickets_created) {
-            for (const t of parsed.tickets_created) {
-              const ticket = await queryOne(
-                'INSERT INTO dev_tickets (title, description, project) VALUES ($1, $2, $3) RETURNING *',
-                [t.title, t.description || null, t.project || 'general']
-              );
-              tickets_created.push(ticket);
-            }
-          }
-        }
-      } catch {}
-
-      await eventBus.publish('dev.chat', 'developer', { message: message.slice(0, 100), tickets: tickets_created.length });
-
-      return {
-        response: result.response?.replace(/\{[\s\S]*tickets_created[\s\S]*\}/, '').trim() || result.response,
-        tickets_created,
-      };
-    } catch (err) {
-      return { error: err.message, response: `Error: ${err.message}`, tickets_created: [] };
-    }
   });
 
   // ============================================

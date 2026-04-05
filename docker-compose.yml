@@ -65,8 +65,13 @@ services:
       - WA_ALLOWED_NUMBERS=${WA_ALLOWED_NUMBERS}
       - WA_GROUP_ID=${WA_GROUP_ID}
       - WA_BOT_PREFIX=${WA_BOT_PREFIX:-!bw}
+      - WA_DEFAULT_CLIENT_ID=${WA_DEFAULT_CLIENT_ID}
     volumes:
-      - wwebjs_auth:/app/.wwebjs_auth
+      - ./wwebjs_auth:/app/.wwebjs_auth
+    deploy:
+      resources:
+        limits:
+          memory: 2G
     expose:
       - "3500"
     depends_on:
