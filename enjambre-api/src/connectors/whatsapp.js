@@ -143,7 +143,19 @@ async function findCrmContact(phone) {
     .eq('client_id', sessionOwnerId)
     .or(`phone.ilike.%${clean}%,whatsapp.ilike.%${clean}%`)
     .limit(1);
-  return data?.[0] || null;
+  const contact = data?.[0] || null;
+  if (contact) {
+    // Fetch attached files for context
+    try {
+      const { data: files } = await supabase
+        .from('crm_files')
+        .select('file_name, file_url, file_type')
+        .eq('contact_id', contact.id)
+        .limit(10);
+      contact.files = files || [];
+    } catch { contact.files = []; }
+  }
+  return contact;
 }
 
 async function saveCrmMessage(contactId, channel, direction, senderName, content) {
@@ -286,6 +298,10 @@ async function processAccumulatedMessages(chatId, messages) {
     }
     if (crmContact) {
       systemContext += `[CRM Contact: ${crmContact.name || 'Unknown'}${crmContact.notes ? ', Notes: ' + crmContact.notes : ''}]\n`;
+      if (crmContact.files?.length > 0) {
+        const fileList = crmContact.files.map(f => f.file_name).join(', ');
+        systemContext += `[Client files/docs: ${fileList}]\n`;
+      }
     }
     // Get recent conversation history for continuity
     const history = getHistory(chatId);
