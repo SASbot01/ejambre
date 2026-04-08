@@ -10,6 +10,7 @@ import QRCode from 'qrcode';
 import { orchestrator } from '../agents/orchestrator.js';
 import { eventBus } from '../events/event-bus.js';
 import { supabase } from '../config/database.js';
+import { loadSetterDocs } from '../setter_docs/index.js';
 
 // ---------------------------------------------------------------------------
 // Config
@@ -124,6 +125,117 @@ async function getSetterConfig(session) {
 }
 
 // ---------------------------------------------------------------------------
+// Client context (per-client, cached 60s) — business info, community, general docs
+// ---------------------------------------------------------------------------
+const clientContextCache = new Map(); // key: clientId, value: { data, fetchedAt }
+
+async function getClientContext(session) {
+  if (!supabase || !session.clientId) return '';
+  const cached = clientContextCache.get(session.clientId);
+  if (cached && Date.now() - cached.fetchedAt < 60000) return cached.data;
+
+  const parts = [];
+  try {
+    // 1. Client info from clients table
+    try {
+      const { data: clientInfo } = await supabase
+        .from('clients')
+        .select('name, client_type, website, enabled_features')
+        .eq('id', session.clientId)
+        .limit(1)
+        .single();
+      if (clientInfo) {
+        const info = [`Negocio: ${clientInfo.name || 'N/A'}`];
+        if (clientInfo.client_type) info.push(`Tipo: ${clientInfo.client_type}`);
+        if (clientInfo.website) info.push(`Web: ${clientInfo.website}`);
+        parts.push(info.join(' | '));
+      }
+    } catch {}
+
+    // 2. Community channels + recent messages (max 3 channels, 5 msgs each, total max 500 chars)
+    try {
+      const { data: channels } = await supabase
+        .from('comunidad_channels')
+        .select('id, name')
+        .eq('client_id', session.clientId)
+        .limit(3);
+      if (channels?.length > 0) {
+        const channelTexts = [];
+        for (const ch of channels) {
+          const { data: msgs } = await supabase
+            .from('comunidad_messages')
+            .select('content, author_name')
+            .eq('channel_id', ch.id)
+            .order('created_at', { ascending: false })
+            .limit(5);
+          if (msgs?.length > 0) {
+            const msgSummary = msgs.map(m => `${m.author_name || '?'}: ${(m.content || '').slice(0, 60)}`).join('; ');
+            channelTexts.push(`#${ch.name}: ${msgSummary}`);
+          }
+        }
+        if (channelTexts.length > 0) {
+          const communityText = channelTexts.join('\n').slice(0, 500);
+          parts.push(`Comunidad reciente:\n${communityText}`);
+        }
+      }
+    } catch {}
+
+    // 3. General client documents (crm_files where contact_id is null), categorized
+    try {
+      const { data: generalDocs } = await supabase
+        .from('crm_files')
+        .select('file_name, file_url, file_type')
+        .eq('client_id', session.clientId)
+        .is('contact_id', null)
+        .limit(10);
+      if (generalDocs?.length > 0) {
+        const categorized = { strategy: [], setter_memory: [], documentation: [] };
+        for (const doc of generalDocs) {
+          const nameLower = (doc.file_name || '').toLowerCase();
+          if (nameLower.includes('estrategia')) categorized.strategy.push(doc);
+          else if (nameLower.includes('setter')) categorized.setter_memory.push(doc);
+          else categorized.documentation.push(doc);
+        }
+        const docTexts = [];
+        // Extract content from top docs (max 3 total to limit tokens)
+        const topDocs = [
+          ...categorized.strategy.slice(0, 1).map(d => ({ ...d, cat: 'Estrategia' })),
+          ...categorized.setter_memory.slice(0, 1).map(d => ({ ...d, cat: 'Memoria setter' })),
+          ...categorized.documentation.slice(0, 1).map(d => ({ ...d, cat: 'Documentación' })),
+        ];
+        for (const doc of topDocs) {
+          if (!doc.file_url) { docTexts.push(`[${doc.cat}: ${doc.file_name}]`); continue; }
+          try {
+            if (doc.file_type === 'application/pdf' || doc.file_name?.endsWith('.pdf')) {
+              const res = await fetch(doc.file_url);
+              const buffer = await res.arrayBuffer();
+              const { default: pdfParse } = await import('pdf-parse/lib/pdf-parse.js');
+              const pdf = await pdfParse(Buffer.from(buffer));
+              docTexts.push(`[${doc.cat}: ${doc.file_name}]: ${pdf.text.slice(0, 600)}`);
+            } else if (/\.(txt|md|csv)$/i.test(doc.file_name || '')) {
+              const res = await fetch(doc.file_url);
+              const text = await res.text();
+              docTexts.push(`[${doc.cat}: ${doc.file_name}]: ${text.slice(0, 600)}`);
+            } else {
+              docTexts.push(`[${doc.cat}: ${doc.file_name}]`);
+            }
+          } catch { docTexts.push(`[${doc.cat}: ${doc.file_name}]`); }
+        }
+        if (docTexts.length > 0) {
+          parts.push(`Documentos generales del negocio:\n${docTexts.join('\n').slice(0, 2000)}`);
+        }
+      }
+    } catch {}
+  } catch (err) {
+    console.error(`[WA:${session.clientId?.slice(0,8)}] Error fetching client context:`, err.message);
+  }
+
+  const result = parts.join('\n\n');
+  clientContextCache.set(session.clientId, { data: result, fetchedAt: Date.now() });
+  return result;
+}
+
+// ---------------------------------------------------------------------------
 // CRM persistence (Supabase)
 // ---------------------------------------------------------------------------
 async function findCrmContact(clientId, phone) {
@@ -131,12 +243,13 @@ async function findCrmContact(clientId, phone) {
   const clean = phone.replace(/\D/g, '');
   const { data } = await supabase
     .from('crm_contacts')
-    .select('id, client_id, name, notes')
+    .select('id, client_id, name, notes, email, phone, company, position, status, tags, custom_fields, producto_interes, capital_disponible, situacion_actual, exp_amazon, instagram, whatsapp, website, linkedin')
     .eq('client_id', clientId)
     .or(`phone.ilike.%${clean}%,whatsapp.ilike.%${clean}%`)
     .limit(1);
   const contact = data?.[0] || null;
   if (contact) {
+    // Fetch contact files
     try {
       const { data: files } = await supabase
         .from('crm_files')
@@ -145,6 +258,17 @@ async function findCrmContact(clientId, phone) {
         .limit(10);
       contact.files = files || [];
     } catch { contact.files = []; }
+
+    // Fetch last 10 CRM messages for conversation history context
+    try {
+      const { data: crmMessages } = await supabase
+        .from('crm_messages')
+        .select('direction, sender_name, content, created_at')
+        .eq('contact_id', contact.id)
+        .order('created_at', { ascending: false })
+        .limit(10);
+      contact.conversationHistory = crmMessages || [];
+    } catch { contact.conversationHistory = []; }
   }
   return contact;
 }
@@ -277,13 +401,54 @@ async function processAccumulatedMessages(session, chatId, messages) {
       }
     }
 
+    // Fetch client-level context (cached 60s)
+    const clientCtx = await getClientContext(session);
+
     const systemParts = [
       'Eres un setter de ventas profesional. Respondes en español, con tono cercano y conciso. No inventes datos.',
     ];
     if (setterConfig.message) systemParts.push(`Instrucciones:\n${setterConfig.message}`);
-    if (setterConfig.docs) systemParts.push(`Conocimiento del producto/empresa:\n${setterConfig.docs.slice(0, 2000)}`);
+    // Local setter docs (process, products, objections, post-sale)
+    const localDocs = loadSetterDocs();
+    if (localDocs) systemParts.push(`Documentación del negocio:\n${localDocs}`);
+    if (setterConfig.docs) systemParts.push(`Conocimiento adicional:\n${setterConfig.docs.slice(0, 4000)}`);
+
+    // Client-level context (business info, community, general docs)
+    if (clientCtx) systemParts.push(clientCtx);
+
+    // Full contact profile
     if (crmContact) {
-      systemParts.push(`Contacto actual: ${crmContact.name || 'Desconocido'}${crmContact.notes ? ' — Notas: ' + crmContact.notes : ''}`);
+      const profileParts = [`Nombre: ${crmContact.name || 'Desconocido'}`];
+      if (crmContact.email) profileParts.push(`Email: ${crmContact.email}`);
+      if (crmContact.company) profileParts.push(`Empresa: ${crmContact.company}`);
+      if (crmContact.position) profileParts.push(`Cargo: ${crmContact.position}`);
+      if (crmContact.status) profileParts.push(`Estado: ${crmContact.status}`);
+      if (crmContact.producto_interes) profileParts.push(`Producto interés: ${crmContact.producto_interes}`);
+      if (crmContact.capital_disponible) profileParts.push(`Capital disponible: ${crmContact.capital_disponible}`);
+      if (crmContact.situacion_actual) profileParts.push(`Situación actual: ${crmContact.situacion_actual}`);
+      if (crmContact.exp_amazon) profileParts.push(`Exp Amazon: ${crmContact.exp_amazon}`);
+      if (crmContact.instagram) profileParts.push(`Instagram: ${crmContact.instagram}`);
+      if (crmContact.website) profileParts.push(`Web: ${crmContact.website}`);
+      if (crmContact.linkedin) profileParts.push(`LinkedIn: ${crmContact.linkedin}`);
+      if (crmContact.tags) profileParts.push(`Tags: ${Array.isArray(crmContact.tags) ? crmContact.tags.join(', ') : crmContact.tags}`);
+      if (crmContact.notes) profileParts.push(`Notas: ${crmContact.notes}`);
+      if (crmContact.custom_fields && typeof crmContact.custom_fields === 'object') {
+        const cfEntries = Object.entries(crmContact.custom_fields).filter(([, v]) => v);
+        if (cfEntries.length > 0) profileParts.push(`Campos extra: ${cfEntries.map(([k, v]) => `${k}=${v}`).join(', ')}`);
+      }
+      systemParts.push(`Perfil del contacto:\n${profileParts.join('\n')}`);
+
+      // CRM conversation history (last messages, max 1500 chars)
+      if (crmContact.conversationHistory?.length > 0) {
+        const histLines = crmContact.conversationHistory
+          .reverse()
+          .map(m => {
+            const dir = m.direction === 'inbound' ? '←' : '→';
+            return `${dir} ${m.sender_name || '?'}: ${(m.content || '').slice(0, 150)}`;
+          });
+        const histText = histLines.join('\n').slice(0, 1500);
+        systemParts.push(`Historial de conversación CRM:\n${histText}`);
+      }
     }
     if (fileCtx) systemParts.push(`Documentos del contacto:\n${fileCtx}`);
     const staticSystem = systemParts.join('\n\n');
