@@ -235,6 +235,24 @@ export function registerRoutes(app) {
   });
 
   // ============================================
+  // SETTER DOCS (local files)
+  // ============================================
+  app.get('/api/setter-docs', async () => {
+    const { readdirSync, statSync } = await import('fs');
+    const { join, dirname } = await import('path');
+    const { fileURLToPath } = await import('url');
+    const __dirname = dirname(fileURLToPath(import.meta.url));
+    const docsDir = join(__dirname, '..', 'setter_docs');
+    try {
+      const files = readdirSync(docsDir).filter(f => f.endsWith('.md')).sort();
+      return files.map(f => {
+        const st = statSync(join(docsDir, f));
+        return { name: f, size: st.size, type: 'text/markdown' };
+      });
+    } catch { return []; }
+  });
+
+  // ============================================
   // WEBHOOK CENTRAL (Dashboard-Ops → Enjambre)
   // Recibe eventos de central: prospector, email, CRM changes
   // Crea leads enriquecidos y enrolla en secuencias automáticas
