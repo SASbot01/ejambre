@@ -102,13 +102,13 @@ function getHistory(session, chatId) {
 // ---------------------------------------------------------------------------
 // Setter config (per-client, cached 30s)
 // ---------------------------------------------------------------------------
-async function getSetterConfig(session) {
-  if (!supabase || !session.clientId) return { enabled: false, message: '', docs: '' };
-  if (session.setterConfigCache && Date.now() - session.setterConfigLastFetch < 30000) return session.setterConfigCache;
+async function getSetterConfig(session, { skipCache = false } = {}) {
+  if (!supabase || !session.clientId) return { enabled: false, message: '', docs: '', pipelineId: null };
+  if (!skipCache && session.setterConfigCache && Date.now() - session.setterConfigLastFetch < 30000) return session.setterConfigCache;
   try {
     const { data } = await supabase
       .from('whatsapp_config')
-      .select('setter_enabled, setter_message, setter_docs')
+      .select('setter_enabled, setter_message, setter_docs, setter_pipeline_id')
       .eq('client_id', session.clientId)
       .limit(1)
       .single();
@@ -116,11 +116,12 @@ async function getSetterConfig(session) {
       enabled: !!data?.setter_enabled,
       message: data?.setter_message || '',
       docs: data?.setter_docs || '',
+      pipelineId: data?.setter_pipeline_id || null,
     };
     session.setterConfigLastFetch = Date.now();
     return session.setterConfigCache;
   } catch {
-    return { enabled: false, message: '', docs: '' };
+    return { enabled: false, message: '', docs: '', pipelineId: null };
   }
 }
 
@@ -243,7 +244,7 @@ async function findCrmContact(clientId, phone) {
   const clean = phone.replace(/\D/g, '');
   const { data } = await supabase
     .from('crm_contacts')
-    .select('id, client_id, name, notes, email, phone, company, position, status, tags, custom_fields, producto_interes, capital_disponible, situacion_actual, exp_amazon, instagram, whatsapp, website, linkedin')
+    .select('id, client_id, name, notes, email, phone, company, position, status, tags, custom_fields, producto_interes, capital_disponible, situacion_actual, exp_amazon, instagram, whatsapp, website, linkedin, pipeline_id')
     .eq('client_id', clientId)
     .or(`phone.ilike.%${clean}%,whatsapp.ilike.%${clean}%`)
     .limit(1);
@@ -383,6 +384,18 @@ async function processAccumulatedMessages(session, chatId, messages) {
     return;
   }
 
+  // Pipeline filter: only respond to contacts in the selected pipeline
+  if (setterConfig.pipelineId && !last.isGroupCommand) {
+    if (!crmContact) {
+      console.log(`[WA:${clientId?.slice(0,8)}] Contact not in CRM — skipped (pipeline filter active)`);
+      return;
+    }
+    if (crmContact.pipeline_id !== setterConfig.pipelineId) {
+      console.log(`[WA:${clientId?.slice(0,8)}] Contact pipeline ${crmContact.pipeline_id} != setter pipeline ${setterConfig.pipelineId} — skipped`);
+      return;
+    }
+  }
+
   try {
     await waitForRateLimit();
     const sessionId = `wa-${clientId?.slice(0,8)}-${chatId}`;
@@ -462,6 +475,14 @@ async function processAccumulatedMessages(session, chatId, messages) {
       const delay = randomDelay();
       console.log(`[WA:${clientId?.slice(0,8)}] Waiting ${(delay/60000).toFixed(1)}m...`);
       await new Promise(r => setTimeout(r, delay));
+
+      // Re-check setter config after delay — if disabled while waiting, abort
+      const freshConfig = await getSetterConfig(session, { skipCache: true });
+      if (!freshConfig.enabled) {
+        console.log(`[WA:${clientId?.slice(0,8)}] Setter disabled during delay — message NOT sent`);
+        return;
+      }
+
       try {
         const chat = await session.client.getChatById(chatId);
         await chat.sendSeen();
