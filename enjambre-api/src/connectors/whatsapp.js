@@ -101,10 +101,19 @@ function getHistory(session, chatId) {
 
 // ---------------------------------------------------------------------------
 // Setter config (per-client, cached 30s)
+// Supports multi-setter: when setter_docs contains JSON with "profiles" array,
+// each profile has its own pipeline_id, system_message, docs, and enabled flag.
+// The correct profile is matched by the contact's pipeline_id.
 // ---------------------------------------------------------------------------
-async function getSetterConfig(session, { skipCache = false } = {}) {
-  if (!supabase || !session.clientId) return { enabled: false, message: '', docs: '', pipelineId: null };
-  if (!skipCache && session.setterConfigCache && Date.now() - session.setterConfigLastFetch < 30000) return session.setterConfigCache;
+async function getSetterConfig(session, { skipCache = false, contactPipelineId = null } = {}) {
+  if (!supabase || !session.clientId) return { enabled: false, message: '', docs: '', pipelineId: null, profileName: null };
+  if (!skipCache && session.setterConfigCache && Date.now() - session.setterConfigLastFetch < 30000) {
+    // If multi-setter, resolve profile for this contact
+    if (session.setterConfigCache._profiles && contactPipelineId) {
+      return resolveSetterProfile(session.setterConfigCache, contactPipelineId);
+    }
+    return session.setterConfigCache;
+  }
   try {
     const { data } = await supabase
       .from('whatsapp_config')
@@ -112,17 +121,65 @@ async function getSetterConfig(session, { skipCache = false } = {}) {
       .eq('client_id', session.clientId)
       .limit(1)
       .single();
-    session.setterConfigCache = {
-      enabled: !!data?.setter_enabled,
-      message: data?.setter_message || '',
-      docs: data?.setter_docs || '',
-      pipelineId: data?.setter_pipeline_id || null,
-    };
+
+    // Check if setter_docs contains multi-setter profiles JSON
+    let profiles = null;
+    if (data?.setter_docs) {
+      try {
+        const parsed = JSON.parse(data.setter_docs);
+        if (parsed?.profiles && Array.isArray(parsed.profiles)) {
+          profiles = parsed.profiles;
+        }
+      } catch {} // Not JSON — treat as plain docs text
+    }
+
+    if (profiles) {
+      // Multi-setter mode
+      session.setterConfigCache = {
+        enabled: !!data?.setter_enabled,
+        _profiles: profiles,
+        // Fallback fields for non-profile queries
+        message: data?.setter_message || '',
+        docs: '',
+        pipelineId: null,
+        profileName: null,
+      };
+    } else {
+      // Legacy single-setter mode
+      session.setterConfigCache = {
+        enabled: !!data?.setter_enabled,
+        message: data?.setter_message || '',
+        docs: data?.setter_docs || '',
+        pipelineId: data?.setter_pipeline_id || null,
+        profileName: null,
+        _profiles: null,
+      };
+    }
     session.setterConfigLastFetch = Date.now();
+
+    // Resolve profile if contact pipeline known
+    if (profiles && contactPipelineId) {
+      return resolveSetterProfile(session.setterConfigCache, contactPipelineId);
+    }
     return session.setterConfigCache;
   } catch {
-    return { enabled: false, message: '', docs: '', pipelineId: null };
+    return { enabled: false, message: '', docs: '', pipelineId: null, profileName: null };
   }
+}
+
+function resolveSetterProfile(config, contactPipelineId) {
+  if (!config._profiles || !contactPipelineId) return config;
+  const profile = config._profiles.find(p => p.pipeline_id === contactPipelineId && p.enabled !== false);
+  if (!profile) return { ...config, enabled: false, profileName: null }; // No matching profile
+  return {
+    enabled: config.enabled && profile.enabled !== false,
+    message: profile.system_message || '',
+    docs: profile.docs || '',
+    pipelineId: profile.pipeline_id,
+    profileName: profile.name || null,
+    delayMinutes: profile.delay_minutes,
+    _profiles: config._profiles,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -377,10 +434,11 @@ async function processAccumulatedMessages(session, chatId, messages) {
 
   console.log(`[WA:${clientId?.slice(0,8)}] <- ${last.chatName}: ${combinedBody.slice(0, 80)}`);
 
-  // Check setter config
-  const setterConfig = await getSetterConfig(session);
+  // Check setter config — pass contact's pipeline for multi-setter resolution
+  const contactPipelineId = crmContact?.pipeline_id || null;
+  const setterConfig = await getSetterConfig(session, { contactPipelineId });
   if (!setterConfig.enabled && !last.isGroupCommand) {
-    console.log(`[WA:${clientId?.slice(0,8)}] Setter off — saved only`);
+    console.log(`[WA:${clientId?.slice(0,8)}] Setter off${setterConfig.profileName ? ` (no profile for pipeline ${contactPipelineId?.slice(0,8)})` : ''} — saved only`);
     return;
   }
 
@@ -394,6 +452,10 @@ async function processAccumulatedMessages(session, chatId, messages) {
       console.log(`[WA:${clientId?.slice(0,8)}] Contact pipeline ${crmContact.pipeline_id} != setter pipeline ${setterConfig.pipelineId} — skipped`);
       return;
     }
+  }
+
+  if (setterConfig.profileName) {
+    console.log(`[WA:${clientId?.slice(0,8)}] Using setter profile: ${setterConfig.profileName}`);
   }
 
   try {
@@ -477,7 +539,7 @@ async function processAccumulatedMessages(session, chatId, messages) {
       await new Promise(r => setTimeout(r, delay));
 
       // Re-check setter config after delay — if disabled while waiting, abort
-      const freshConfig = await getSetterConfig(session, { skipCache: true });
+      const freshConfig = await getSetterConfig(session, { skipCache: true, contactPipelineId });
       if (!freshConfig.enabled) {
         console.log(`[WA:${clientId?.slice(0,8)}] Setter disabled during delay — message NOT sent`);
         return;
@@ -497,7 +559,7 @@ async function processAccumulatedMessages(session, chatId, messages) {
     console.log(`[WA:${clientId?.slice(0,8)}] -> ${last.chatName}: ${response.slice(0, 80)}...`);
 
     // Persist outbound
-    if (crmContact) saveCrmMessage(clientId, crmContact.id, 'whatsapp', 'outbound', 'AI Setter', response).catch(() => {});
+    if (crmContact) saveCrmMessage(clientId, crmContact.id, 'whatsapp', 'outbound', setterConfig.profileName || 'AI Setter', response).catch(() => {});
     if (agentConvId) saveAgentMessage(clientId, agentConvId, 'assistant', response).catch(() => {});
     if (!last.isGroupCommand) forwardToGroup(session, last.senderName, last.chatName, combinedBody, response).catch(() => {});
 
