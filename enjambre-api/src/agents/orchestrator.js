@@ -4,6 +4,7 @@ import { crmTools, crmHandlers } from '../tools/crm-tools.js';
 import { opsTools, opsHandlers } from '../tools/ops-tools.js';
 import { eventBus } from '../events/event-bus.js';
 import { query } from '../config/database.js';
+import { trackAiUsage } from '../utils/ai-tracker.js';
 
 const client = new Anthropic();
 
@@ -76,6 +77,7 @@ export class Orchestrator {
         tools: ALL_TOOLS,
         messages,
       });
+      trackAiUsage('orchestrator', DEFAULT_MODEL, response.usage, { operation: 'process' });
 
       const actionsLog = [];
 
@@ -133,6 +135,7 @@ export class Orchestrator {
           tools: ALL_TOOLS,
           messages,
         });
+        trackAiUsage('orchestrator', DEFAULT_MODEL, response.usage, { operation: 'process_loop' });
       }
 
       // Extraer la respuesta final de texto
@@ -236,6 +239,7 @@ export class Orchestrator {
         system: cachedSystem(staticSystem),
         messages,
       });
+      trackAiUsage(this._currentSetterName || 'setter', DEFAULT_MODEL, response.usage, { operation: 'setter_reply', session_id: sessionId });
 
       const textBlocks = response.content.filter((b) => b.type === 'text');
       const finalText = textBlocks.map((b) => b.text).join('\n');

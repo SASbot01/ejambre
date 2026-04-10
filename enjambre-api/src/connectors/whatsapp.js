@@ -528,7 +528,8 @@ async function processAccumulatedMessages(session, chatId, messages) {
     if (fileCtx) systemParts.push(`Documentos del contacto:\n${fileCtx}`);
     const staticSystem = systemParts.join('\n\n');
 
-    // Solo el mensaje nuevo va en el user turn — el historial lo gestiona el orchestrator
+    // Pass setter profile name so orchestrator can tag the usage
+    orchestrator._currentSetterName = setterConfig.profileName ? `setter_${setterConfig.profileName.toLowerCase().replace(/\s+/g, '_')}` : 'setter';
     const result = await orchestrator.setterReply(staticSystem, combinedBody, sessionId);
     const response = result.response || 'Sin respuesta.';
 
