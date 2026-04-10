@@ -442,14 +442,20 @@ async function processAccumulatedMessages(session, chatId, messages) {
     return;
   }
 
-  // Pipeline filter: only respond to contacts in the selected pipeline
-  if (setterConfig.pipelineId && !last.isGroupCommand) {
+  // STRICT pipeline filter: setter ONLY responds to contacts that are
+  // already in the CRM AND in the pipeline assigned to the setter.
+  // Group commands (!bw prefix) bypass this check.
+  if (!last.isGroupCommand) {
+    if (!setterConfig.pipelineId) {
+      console.log(`[WA:${clientId?.slice(0,8)}] No pipeline configured for setter — message saved, NOT responding (configure pipeline in AI Setter)`);
+      return;
+    }
     if (!crmContact) {
-      console.log(`[WA:${clientId?.slice(0,8)}] Contact not in CRM — skipped (pipeline filter active)`);
+      console.log(`[WA:${clientId?.slice(0,8)}] Contact ${last.senderNumber} not in CRM — NOT responding`);
       return;
     }
     if (crmContact.pipeline_id !== setterConfig.pipelineId) {
-      console.log(`[WA:${clientId?.slice(0,8)}] Contact pipeline ${crmContact.pipeline_id} != setter pipeline ${setterConfig.pipelineId} — skipped`);
+      console.log(`[WA:${clientId?.slice(0,8)}] Contact pipeline ${crmContact.pipeline_id?.slice(0,8)} != setter pipeline ${setterConfig.pipelineId?.slice(0,8)} — NOT responding`);
       return;
     }
   }
