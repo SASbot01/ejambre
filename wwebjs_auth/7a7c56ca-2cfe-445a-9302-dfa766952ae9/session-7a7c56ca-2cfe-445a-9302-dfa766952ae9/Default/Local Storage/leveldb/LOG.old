@@ -1,0 +1,6 @@
+2026/04/08-12:11:01.085 b8 Reusing MANIFEST /app/.wwebjs_auth/7a7c56ca-2cfe-445a-9302-dfa766952ae9/session-7a7c56ca-2cfe-445a-9302-dfa766952ae9/Default/Local Storage/leveldb/MANIFEST-000001
+2026/04/08-12:11:01.092 b8 Recovering log #3
+2026/04/08-12:11:01.092 b8 Reusing old log /app/.wwebjs_auth/7a7c56ca-2cfe-445a-9302-dfa766952ae9/session-7a7c56ca-2cfe-445a-9302-dfa766952ae9/Default/Local Storage/leveldb/000003.log 
+2026/04/08-12:16:56.276 ba Level-0 table #5: started
+2026/04/08-12:16:56.282 ba Level-0 table #5: 22201 bytes OK
+2026/04/08-12:16:56.287 ba Delete type=0 #3

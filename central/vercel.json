@@ -1,0 +1,33 @@
+{
+  "functions": {
+    "api/agent.js": {
+      "maxDuration": 300
+    },
+    "api/send-email.js": {
+      "maxDuration": 120
+    },
+    "api/onboarding.js": {
+      "maxDuration": 120
+    },
+    "api/pipeline-intelligence.js": {
+      "maxDuration": 120
+    },
+    "api/bridge-enjambre.js": {
+      "maxDuration": 30
+    }
+  },
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": "/api/$1" },
+    { "source": "/((?!api/).*)", "destination": "/index.html" }
+  ],
+  "headers": [
+    {
+      "source": "/api/(.*)",
+      "headers": [
+        { "key": "Access-Control-Allow-Origin", "value": "*" },
+        { "key": "Access-Control-Allow-Methods", "value": "GET, POST, PUT, DELETE, OPTIONS" },
+        { "key": "Access-Control-Allow-Headers", "value": "Content-Type, X-API-Key, Authorization" }
+      ]
+    }
+  ]
+}
