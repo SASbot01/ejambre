@@ -25,10 +25,14 @@ const WA_AUTH_BASE = '/app/.wwebjs_auth';
 const MAX_HISTORY = 20;
 
 // ---------------------------------------------------------------------------
-// Multi-session state
+// Multi-session state — keyed by "clientId:accountIndex" for multi-account
 // ---------------------------------------------------------------------------
-// sessions: Map<clientId, { client, isReady, currentQR, conversations, debounceTimers, pendingMessages, agentConvCache, setterConfigCache, setterConfigLastFetch }>
+// sessions: Map<sessionKey, { client, isReady, currentQR, conversations, debounceTimers, pendingMessages, agentConvCache, setterConfigCache, setterConfigLastFetch, clientId, accountIndex }>
 const sessions = new Map();
+
+function sessionKey(clientId, accountIndex = 1) {
+  return `${clientId}:${accountIndex}`;
+}
 
 // Rate limiter (shared)
 let apiCallTimestamps = [];
@@ -44,11 +48,11 @@ async function waitForRateLimit() {
   apiCallTimestamps.push(Date.now());
 }
 
-function getSession(clientId) {
-  return sessions.get(clientId) || null;
+function getSession(clientId, accountIndex = 1) {
+  return sessions.get(sessionKey(clientId, accountIndex)) || null;
 }
 
-function createSessionState(clientId) {
+function createSessionState(clientId, accountIndex = 1) {
   return {
     client: null,
     isReady: false,
@@ -60,6 +64,7 @@ function createSessionState(clientId) {
     setterConfigCache: null,
     setterConfigLastFetch: 0,
     clientId,
+    accountIndex,
   };
 }
 
@@ -119,6 +124,7 @@ async function getSetterConfig(session, { skipCache = false, contactPipelineId =
       .from('whatsapp_config')
       .select('setter_enabled, setter_message, setter_docs, setter_pipeline_id')
       .eq('client_id', session.clientId)
+      .eq('account_index', session.accountIndex || 1)
       .limit(1)
       .single();
 
@@ -638,7 +644,9 @@ function createMessageHandler(session) {
 // ---------------------------------------------------------------------------
 function createClientForSession(session) {
   const clientId = session.clientId;
-  const authPath = clientId ? `${WA_AUTH_BASE}/${clientId}` : WA_AUTH_BASE;
+  const accountIndex = session.accountIndex || 1;
+  const sessionId = accountIndex > 1 ? `${clientId}-${accountIndex}` : clientId;
+  const authPath = clientId ? `${WA_AUTH_BASE}/${sessionId}` : WA_AUTH_BASE;
 
   const puppeteerOpts = {
     headless: true,
@@ -648,7 +656,7 @@ function createClientForSession(session) {
   if (chromePath) puppeteerOpts.executablePath = chromePath;
 
   const client = new Client({
-    authStrategy: new LocalAuth({ dataPath: authPath, clientId: clientId || 'default' }),
+    authStrategy: new LocalAuth({ dataPath: authPath, clientId: sessionId || 'default' }),
     puppeteer: puppeteerOpts,
   });
 
@@ -666,34 +674,38 @@ function createClientForSession(session) {
   client.on('ready', async () => {
     session.isReady = true;
     session.currentQR = null;
-    console.log(`[WA:${clientId?.slice(0,8)}] Ready — listening for messages`);
-    // Update whatsapp_config.connected = true
+    console.log(`[WA:${clientId?.slice(0,8)}:${accountIndex}] Ready — listening for messages`);
+    // Update whatsapp_config.connected = true for the correct account_index
     if (supabase && clientId) {
       try {
-        const { data: existing } = await supabase.from('whatsapp_config').select('id').eq('client_id', clientId).limit(1);
+        const { data: existing } = await supabase.from('whatsapp_config')
+          .select('id').eq('client_id', clientId).eq('account_index', accountIndex).limit(1);
         if (existing?.length > 0) {
-          await supabase.from('whatsapp_config').update({ connected: true, updated_at: new Date().toISOString() }).eq('client_id', clientId);
+          await supabase.from('whatsapp_config')
+            .update({ connected: true, updated_at: new Date().toISOString() })
+            .eq('client_id', clientId).eq('account_index', accountIndex);
         } else {
-          await supabase.from('whatsapp_config').insert({ client_id: clientId, connected: true });
+          await supabase.from('whatsapp_config').insert({ client_id: clientId, connected: true, account_index: accountIndex });
         }
       } catch {}
     }
-    eventBus.publish('connector.started', 'whatsapp', { clientId });
+    eventBus.publish('connector.started', 'whatsapp', { clientId, accountIndex });
   });
 
   client.on('auth_failure', () => { session.isReady = false; });
 
   client.on('disconnected', (reason) => {
-    console.warn(`[WA:${clientId?.slice(0,8)}] Disconnected: ${reason}`);
+    console.warn(`[WA:${clientId?.slice(0,8)}:${accountIndex}] Disconnected: ${reason}`);
     session.isReady = false;
-    // Update connected = false
+    // Update connected = false for this account_index
     if (supabase && clientId) {
-      supabase.from('whatsapp_config').update({ connected: false }).eq('client_id', clientId).catch(() => {});
+      supabase.from('whatsapp_config').update({ connected: false })
+        .eq('client_id', clientId).eq('account_index', accountIndex).catch(() => {});
     }
     // Reconnect
     setTimeout(() => {
-      console.log(`[WA:${clientId?.slice(0,8)}] Reconnecting...`);
-      client.initialize().catch(err => console.error(`[WA:${clientId?.slice(0,8)}] Reconnect error:`, err.message));
+      console.log(`[WA:${clientId?.slice(0,8)}:${accountIndex}] Reconnecting...`);
+      client.initialize().catch(err => console.error(`[WA:${clientId?.slice(0,8)}:${accountIndex}] Reconnect error:`, err.message));
     }, 10_000);
   });
 
@@ -705,9 +717,10 @@ function createClientForSession(session) {
 // ---------------------------------------------------------------------------
 // Session management
 // ---------------------------------------------------------------------------
-function startSession(clientId) {
-  if (sessions.has(clientId)) {
-    const existing = sessions.get(clientId);
+function startSession(clientId, accountIndex = 1) {
+  const key = sessionKey(clientId, accountIndex);
+  if (sessions.has(key)) {
+    const existing = sessions.get(key);
     if (existing.isReady) return existing;
     // Destroy stale session
     existing.client?.destroy().catch(() => {});
@@ -718,20 +731,20 @@ function startSession(clientId) {
     let oldestTime = Infinity;
     for (const [id, s] of sessions) {
       const lastAct = Math.max(...[...s.conversations.values()].map(c => c.lastActivity || 0), 0);
-      if (lastAct < oldestTime && id !== clientId) { oldest = id; oldestTime = lastAct; }
+      if (lastAct < oldestTime && id !== key) { oldest = id; oldestTime = lastAct; }
     }
     if (oldest) {
-      console.log(`[WA] Evicting session ${oldest.slice(0,8)} (max ${WA_MAX_SESSIONS} reached)`);
+      console.log(`[WA] Evicting session ${oldest} (max ${WA_MAX_SESSIONS} reached)`);
       const s = sessions.get(oldest);
       s.client?.destroy().catch(() => {});
       sessions.delete(oldest);
     }
   }
 
-  const session = createSessionState(clientId);
-  sessions.set(clientId, session);
+  const session = createSessionState(clientId, accountIndex);
+  sessions.set(key, session);
   createClientForSession(session);
-  session.client.initialize().catch(err => console.error(`[WA:${clientId?.slice(0,8)}] Init error:`, err.message));
+  session.client.initialize().catch(err => console.error(`[WA:${clientId?.slice(0,8)}:${accountIndex}] Init error:`, err.message));
   return session;
 }
 
@@ -743,16 +756,17 @@ export function registerWhatsAppRoutes(app) {
   // Status
   app.get('/api/whatsapp/status', async (req) => {
     const clientId = req.query.clientId;
+    const accountIndex = parseInt(req.query.accountIndex || '1', 10);
     if (!clientId) {
       // Return summary of all sessions
       const all = [];
-      for (const [id, s] of sessions) {
-        all.push({ clientId: id, connected: s.isReady, activeConversations: s.conversations.size });
+      for (const [, s] of sessions) {
+        all.push({ clientId: s.clientId, accountIndex: s.accountIndex, connected: s.isReady, activeConversations: s.conversations.size });
       }
       return { sessions: all, totalSessions: sessions.size, maxSessions: WA_MAX_SESSIONS };
     }
-    const session = getSession(clientId);
-    if (!session) return { connected: false, qr: null, qrImage: null, activeConversations: 0, sessionOwner: null };
+    const session = getSession(clientId, accountIndex);
+    if (!session) return { connected: false, qr: null, qrImage: null, activeConversations: 0, sessionOwner: null, accountIndex };
     let qrImage = null;
     if (session.currentQR) {
       try { qrImage = await QRCode.toDataURL(session.currentQR, { width: 280, margin: 2 }); } catch {}
@@ -763,16 +777,18 @@ export function registerWhatsAppRoutes(app) {
       qrImage,
       activeConversations: session.conversations.size,
       sessionOwner: clientId,
+      accountIndex,
     };
   });
 
   // Send message
   app.post('/api/whatsapp/send', async (req) => {
-    const { to, message, clientId } = req.body;
+    const { to, message, clientId, accountIndex: acctIdx } = req.body;
+    const accountIndex = parseInt(acctIdx || '1', 10);
     if (!to || !message) return { error: 'to y message son requeridos' };
     if (!clientId) return { error: 'clientId es requerido' };
-    const session = getSession(clientId);
-    if (!session?.isReady) return { error: 'WhatsApp no conectado para este cliente' };
+    const session = getSession(clientId, accountIndex);
+    if (!session?.isReady) return { error: `WhatsApp no conectado para este cliente (cuenta ${accountIndex})` };
     try {
       await session.client.sendMessage(to.includes('@') ? to : `${to}@c.us`, message);
       return { ok: true };
@@ -783,14 +799,16 @@ export function registerWhatsAppRoutes(app) {
 
   // Restart / connect session
   app.post('/api/whatsapp/restart', async (req) => {
-    const { clientId } = req.body || {};
+    const { clientId, accountIndex: acctIdx } = req.body || {};
+    const accountIndex = parseInt(acctIdx || '1', 10);
     if (!clientId) return { error: 'clientId es requerido' };
     try {
-      const existing = getSession(clientId);
+      const key = sessionKey(clientId, accountIndex);
+      const existing = getSession(clientId, accountIndex);
       if (existing?.client) await existing.client.destroy().catch(() => {});
-      sessions.delete(clientId);
-      startSession(clientId);
-      return { ok: true, message: 'Session starting — scan QR when ready', sessionOwner: clientId };
+      sessions.delete(key);
+      startSession(clientId, accountIndex);
+      return { ok: true, message: 'Session starting — scan QR when ready', sessionOwner: clientId, accountIndex };
     } catch (err) {
       return { error: err.message };
     }
@@ -799,14 +817,35 @@ export function registerWhatsAppRoutes(app) {
   // List sessions
   app.get('/api/whatsapp/sessions', async () => {
     const list = [];
-    for (const [id, s] of sessions) {
-      list.push({ clientId: id, connected: s.isReady, conversations: s.conversations.size });
+    for (const [, s] of sessions) {
+      list.push({ clientId: s.clientId, accountIndex: s.accountIndex, connected: s.isReady, conversations: s.conversations.size });
     }
     return { sessions: list, max: WA_MAX_SESSIONS };
   });
 
-  // Boot default session if configured
-  if (WA_DEFAULT_CLIENT_ID) {
+  // Boot sessions from database — all whatsapp_config rows with connected=true or a phone_number
+  if (supabase) {
+    (async () => {
+      try {
+        const { data: configs } = await supabase.from('whatsapp_config')
+          .select('client_id, account_index, connected')
+          .or('connected.eq.true,phone_number.neq.')
+        if (configs?.length > 0) {
+          for (const cfg of configs) {
+            const ci = cfg.client_id;
+            const ai = cfg.account_index || 1;
+            console.log(`[WA] Auto-starting session for ${ci?.slice(0,8)}:${ai}...`);
+            startSession(ci, ai);
+          }
+        }
+      } catch (err) {
+        console.error('[WA] Error auto-booting sessions:', err.message);
+      }
+    })();
+  }
+
+  // Fallback: boot default session if configured and no DB sessions found
+  if (WA_DEFAULT_CLIENT_ID && sessions.size === 0) {
     console.log(`[WA] Starting default session for ${WA_DEFAULT_CLIENT_ID.slice(0,8)}...`);
     startSession(WA_DEFAULT_CLIENT_ID);
   }
@@ -814,10 +853,10 @@ export function registerWhatsAppRoutes(app) {
   console.log(`[WA] Multi-session enabled (max ${WA_MAX_SESSIONS}). Routes: /api/whatsapp/status, /send, /restart, /sessions`);
 }
 
-export async function sendWhatsAppNotification(phoneNumber, message, clientId) {
+export async function sendWhatsAppNotification(phoneNumber, message, clientId, accountIndex = 1) {
   const cid = clientId || WA_DEFAULT_CLIENT_ID;
   if (!cid) return;
-  const session = getSession(cid);
+  const session = getSession(cid, accountIndex);
   if (!session?.isReady) return;
   const chatId = phoneNumber.includes('@') ? phoneNumber : `${phoneNumber}@c.us`;
   try { await session.client.sendMessage(chatId, message); } catch {}
