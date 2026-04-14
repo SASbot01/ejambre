@@ -7,6 +7,8 @@ import pkg from 'whatsapp-web.js';
 const { Client, LocalAuth, MessageMedia } = pkg;
 import qrcode from 'qrcode-terminal';
 import QRCode from 'qrcode';
+import fs from 'node:fs';
+import path from 'node:path';
 import { orchestrator } from '../agents/orchestrator.js';
 import { eventBus } from '../events/event-bus.js';
 import { supabase } from '../config/database.js';
@@ -822,8 +824,24 @@ function createClientForSession(session) {
 // ---------------------------------------------------------------------------
 // Session management
 // ---------------------------------------------------------------------------
+// Remove stale Chromium singleton lock files left behind by a crashed/killed
+// previous container. Safe to run when no Chromium is active for this profile.
+function clearStaleSingletonLocks(clientId) {
+  try {
+    const sessionDir = path.join(WA_AUTH_BASE, clientId, `session-${clientId}`);
+    if (!fs.existsSync(sessionDir)) return;
+    for (const name of ['SingletonLock', 'SingletonCookie', 'SingletonSocket']) {
+      const p = path.join(sessionDir, name);
+      if (fs.existsSync(p) || fs.lstatSync(p, { throwIfNoEntry: false })) {
+        fs.rmSync(p, { force: true });
+      }
+    }
+  } catch {}
+}
+
 function startSession(clientId, accountIndex = 1) {
   const key = sessionKey(clientId, accountIndex);
+  clearStaleSingletonLocks(clientId);
   if (sessions.has(key)) {
     const existing = sessions.get(key);
     if (existing.isReady) return existing;
@@ -884,6 +902,26 @@ export function registerWhatsAppRoutes(app) {
       sessionOwner: clientId,
       accountIndex,
     };
+  });
+
+  // Preview TTS audio (returns base64 mp3 without sending)
+  app.post('/api/tts/preview', async (req) => {
+    const { text, voiceId } = req.body || {};
+    if (!text || !text.trim()) return { error: 'text es requerido' };
+    if (!isElevenLabsConfigured()) return { error: 'ElevenLabs no configurado (falta ELEVENLABS_API_KEY)' };
+    try {
+      const effectiveVoiceId = voiceId || getDefaultVoiceId();
+      if (!effectiveVoiceId) return { error: 'voiceId requerido (configura ELEVENLABS_VOICE_ID_ALEX)' };
+      const buf = await textToSpeech(text, effectiveVoiceId);
+      return {
+        ok: true,
+        audioBase64: buf.toString('base64'),
+        mime: 'audio/mpeg',
+        voiceId: effectiveVoiceId,
+      };
+    } catch (err) {
+      return { error: err.message };
+    }
   });
 
   // Send message (texto o audio TTS)

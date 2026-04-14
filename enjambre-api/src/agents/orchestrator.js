@@ -222,6 +222,7 @@ export class Orchestrator {
   // Ahorra ~70-90% tokens vs orchestrator.process para chats de ventas.
   // ---------------------------------------------------------------------------
   async setterReply(staticSystem, userMessage, sessionId = 'default') {
+    const started = Date.now();
     try {
       if (!this.conversations.has(sessionId)) {
         this.conversations.set(sessionId, []);
@@ -245,10 +246,22 @@ export class Orchestrator {
       const finalText = textBlocks.map((b) => b.text).join('\n');
       messages.push({ role: 'assistant', content: response.content });
 
-      return { response: finalText, actions: [], agents_used: [] };
+      return {
+        response: finalText,
+        actions: [],
+        agents_used: [],
+        _meta: {
+          model: DEFAULT_MODEL,
+          agentName: this._currentSetterName || 'setter',
+          tokensIn: response.usage?.input_tokens || 0,
+          tokensOut: response.usage?.output_tokens || 0,
+          cacheRead: response.usage?.cache_read_input_tokens || 0,
+          durationMs: Date.now() - started,
+        },
+      };
     } catch (err) {
       console.error('Error in orchestrator.setterReply:', err);
-      return { response: 'Disculpe, ha ocurrido un error. Por favor, inténtelo de nuevo más tarde.' };
+      return { response: 'Disculpe, ha ocurrido un error. Por favor, inténtelo de nuevo más tarde.', _meta: { error: err.message } };
     }
   }
 }

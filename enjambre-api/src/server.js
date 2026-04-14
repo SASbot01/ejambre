@@ -4,6 +4,7 @@ import { eventBus } from './events/event-bus.js';
 import { db } from './config/database.js';
 import { registerRoutes } from './routes/index.js';
 import { startSequenceWorker } from './workers/sequence-worker.js';
+import { startBrainWorker } from './workers/brain-worker.js';
 import { registerWhatsAppRoutes } from './connectors/whatsapp.js';
 
 const app = Fastify({ logger: true });
@@ -36,3 +37,4 @@ app.log.info(`BlackWolf API activo en puerto ${port}`);
 
 // Iniciar workers
 startSequenceWorker();
+startBrainWorker();

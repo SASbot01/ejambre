@@ -3,6 +3,9 @@ import { eventBus } from '../events/event-bus.js';
 import { query, queryOne } from '../config/database.js';
 import { authenticate } from '../auth/auth.js';
 import { enrollLead } from '../workers/sequence-worker.js';
+import { registerBrainRoutes } from './agent-brain.js';
+import { registerWeeklyFeedbackRoutes } from './weekly-feedback.js';
+import { registerDiscordAgentRoutes } from './agent-discord.js';
 
 export function registerRoutes(app) {
   // ============================================
@@ -406,6 +409,21 @@ export function registerRoutes(app) {
     await enrollLead(req.params.leadId);
     return { ok: true };
   });
+
+  // ============================================
+  // AGENT BRAIN — decisiones, feedback, aprendizajes
+  // ============================================
+  registerBrainRoutes(app);
+
+  // ============================================
+  // WEEKLY FEEDBACK — formulario semanal bloqueante
+  // ============================================
+  registerWeeklyFeedbackRoutes(app);
+
+  // ============================================
+  // DISCORD AGENT — control plane (proxy al bot Python)
+  // ============================================
+  registerDiscordAgentRoutes(app);
 
   // ============================================
   // SETUP: escuchar eventos automáticos
