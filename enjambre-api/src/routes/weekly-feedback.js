@@ -205,20 +205,42 @@ export function registerWeeklyFeedbackRoutes(app) {
     }
 
     const ua = req.headers['user-agent'] || null;
-    const { data, error } = await supabase
+    const insertRow = {
+      user_email, user_type: user_type || null,
+      client_slug: client_slug || null, client_id: client_id || null,
+      form_version: Number(form_version),
+      scale_answers, yesno_answers,
+      yesno_reasons: Object.keys(cleanReasons).length > 0 ? cleanReasons : null,
+      text_answer: text_answer || null,
+      user_agent: ua,
+    };
+    let { data, error } = await supabase
       .from('weekly_feedback_responses')
-      .insert({
-        user_email, user_type: user_type || null,
-        client_slug: client_slug || null, client_id: client_id || null,
-        form_version: Number(form_version),
-        scale_answers, yesno_answers,
-        yesno_reasons: Object.keys(cleanReasons).length > 0 ? cleanReasons : null,
-        text_answer: text_answer || null,
-        user_agent: ua,
-      })
+      .insert(insertRow)
       .select('id, created_at')
       .single();
-    if (error) return reply.code(500).send({ error: error.message });
+    if (error) {
+      console.error('[weekly-feedback] insert failed:', {
+        user_email, client_slug, code: error.code, message: error.message, details: error.details,
+      });
+      // Graceful fallback: migration 009 (yesno_reasons column) may not have run yet.
+      // Retry without that column so the user doesn't lose their submission.
+      if (error.code === '42703' || /yesno_reasons/i.test(error.message || '')) {
+        const { yesno_reasons: _drop, ...minimal } = insertRow;
+        const retry = await supabase
+          .from('weekly_feedback_responses')
+          .insert(minimal)
+          .select('id, created_at')
+          .single();
+        if (retry.error) {
+          console.error('[weekly-feedback] retry failed:', retry.error.message);
+          return reply.code(500).send({ error: retry.error.message, hint: 'Run migration 009 to enable yesno_reasons.' });
+        }
+        data = retry.data;
+      } else {
+        return reply.code(500).send({ error: error.message, code: error.code });
+      }
+    }
 
     // Auto-trigger: si hay >= SUMMARY_THRESHOLD respuestas sin analizar, genera resumen en background.
     runSummaryIfThresholdReached({ auto: true })
