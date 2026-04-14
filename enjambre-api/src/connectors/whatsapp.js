@@ -380,6 +380,37 @@ async function findCrmContact(clientId, phone) {
   return contact;
 }
 
+// Auto-create a crm_contact when a WhatsApp QR inbound arrives from an unknown
+// number. Preserves full conversation history without manual intervention.
+async function findOrCreateCrmContact(clientId, phone, name) {
+  if (!supabase || !clientId || !phone) return null;
+  const existing = await findCrmContact(clientId, phone);
+  if (existing) return existing;
+  const clean = phone.replace(/\D/g, '');
+  try {
+    const { data, error } = await supabase
+      .from('crm_contacts')
+      .insert({
+        client_id: clientId,
+        name: (name && name.trim()) || `+${clean}`,
+        phone: clean,
+        whatsapp: clean,
+        status: 'lead',
+        source: 'whatsapp',
+        notes: 'Auto-creado desde WhatsApp QR entrante',
+      })
+      .select('id, client_id, name, phone, status, pipeline_id')
+      .single();
+    if (error) { console.error('[WA] Error creating crm_contact:', error.message); return null; }
+    data.conversationHistory = [];
+    data.files = [];
+    return data;
+  } catch (err) {
+    console.error('[WA] Error creating crm_contact:', err.message);
+    return null;
+  }
+}
+
 async function saveCrmMessage(clientId, contactId, channel, direction, senderName, content, agentDecisionId = null) {
   if (!supabase || !clientId) return;
   try {
@@ -486,8 +517,8 @@ async function processAccumulatedMessages(session, chatId, messages) {
 
   addToHistory(session, chatId, 'user', combinedBody);
 
-  // Persist inbound
-  const crmContact = await findCrmContact(clientId, last.senderNumber).catch(() => null);
+  // Persist inbound — auto-create contact if unknown so we never lose history
+  const crmContact = await findOrCreateCrmContact(clientId, last.senderNumber, last.senderName).catch(() => null);
   if (crmContact) saveCrmMessage(clientId, crmContact.id, 'whatsapp', 'inbound', last.senderName, combinedBody).catch(() => {});
   const agentConvId = await getOrCreateAgentConversation(session, chatId, last.senderName, last.senderNumber).catch(() => null);
   if (agentConvId) saveAgentMessage(clientId, agentConvId, 'user', combinedBody).catch(() => {});
@@ -680,6 +711,17 @@ async function processAccumulatedMessages(session, chatId, messages) {
 
     // Persist outbound (con decision_id para permitir feedback desde CRM)
     if (crmContact) saveCrmMessage(clientId, crmContact.id, 'whatsapp', 'outbound', setterConfig.profileName || 'AI Setter', response, decisionId).catch(() => {});
+
+    // Auto-assign pipeline/stage if the contact has none and the setter has defaults
+    // (lead-magnet-like placement): first AI reply lands the contact on the
+    // configured pipeline so it appears in the right CRM bucket.
+    if (crmContact && !crmContact.pipeline_id && setterConfig.pipelineId) {
+      const patch = { pipeline_id: setterConfig.pipelineId };
+      if (setterConfig.defaultStageKey) patch.stage_key = setterConfig.defaultStageKey;
+      supabase.from('crm_contacts').update(patch).eq('id', crmContact.id).then(({ error }) => {
+        if (error) console.error('[WA] auto-assign pipeline failed:', error.message);
+      });
+    }
     if (agentConvId) saveAgentMessage(clientId, agentConvId, 'assistant', response).catch(() => {});
     if (!last.isGroupCommand) forwardToGroup(session, last.senderName, last.chatName, combinedBody, response).catch(() => {});
 
