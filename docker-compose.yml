@@ -54,10 +54,12 @@ services:
       # Email
       - RESEND_API_KEY=${RESEND_API_KEY}
       - EMAIL_FROM=${EMAIL_FROM:-BlackWolf <noreply@blackwolfsec.io>}
-      # Discord
+      # Discord (legacy connector, deprecado)
       - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN}
       - DISCORD_CHANNEL_IDS=${DISCORD_CHANNEL_IDS}
       - DISCORD_ADMIN_ROLE=${DISCORD_ADMIN_ROLE:-enjambre-admin}
+      # Discord Agent sidecar (bot Python en el host, via systemd agente-discord.service)
+      - DISCORD_BOT_API_URL=http://host.docker.internal:8788
       # WhatsApp
       - WA_PHONE_NUMBER_ID=${WA_PHONE_NUMBER_ID}
       - WA_ACCESS_TOKEN=${WA_ACCESS_TOKEN}
@@ -66,6 +68,10 @@ services:
       - WA_GROUP_ID=${WA_GROUP_ID}
       - WA_BOT_PREFIX=${WA_BOT_PREFIX:-!bw}
       - WA_DEFAULT_CLIENT_ID=${WA_DEFAULT_CLIENT_ID}
+      # ElevenLabs TTS (voz Álex para audios WhatsApp)
+      - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY}
+      - ELEVENLABS_VOICE_ID_ALEX=${ELEVENLABS_VOICE_ID_ALEX}
+      - ELEVENLABS_MODEL=${ELEVENLABS_MODEL:-eleven_multilingual_v2}
     volumes:
       - ./wwebjs_auth:/app/.wwebjs_auth
     deploy:
@@ -74,6 +80,8 @@ services:
           memory: 2G
     expose:
       - "3500"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       postgres:
         condition: service_healthy

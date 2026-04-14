@@ -4,13 +4,14 @@
 // ============================================
 
 import pkg from 'whatsapp-web.js';
-const { Client, LocalAuth } = pkg;
+const { Client, LocalAuth, MessageMedia } = pkg;
 import qrcode from 'qrcode-terminal';
 import QRCode from 'qrcode';
 import { orchestrator } from '../agents/orchestrator.js';
 import { eventBus } from '../events/event-bus.js';
 import { supabase } from '../config/database.js';
 import { loadSetterDocs } from '../setter_docs/index.js';
+import { textToSpeech, getDefaultVoiceId, isElevenLabsConfigured } from './elevenlabs.js';
 
 // ---------------------------------------------------------------------------
 // Config
@@ -184,8 +185,48 @@ function resolveSetterProfile(config, contactPipelineId) {
     pipelineId: profile.pipeline_id,
     profileName: profile.name || null,
     delayMinutes: profile.delay_minutes,
+    audioPhrases: profile.audio_phrases || '',
+    voiceId: profile.voice_id || null,
     _profiles: config._profiles,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Audio phrases → system prompt block
+// ---------------------------------------------------------------------------
+function buildAudioInstructions(audioPhrasesRaw) {
+  if (!audioPhrasesRaw || !isElevenLabsConfigured()) return '';
+  const phrases = String(audioPhrasesRaw)
+    .split(/\n+|---+/g)
+    .map(s => s.trim())
+    .filter(Boolean);
+  if (phrases.length === 0) return '';
+  const list = phrases.map((p, i) => `${i + 1}. ${p}`).join('\n');
+  return [
+    'Mensajes que debes enviar como nota de voz:',
+    'Cuando en tu respuesta uses (literalmente o reformulado) alguno de los siguientes mensajes, envuélvelo entre los marcadores [AUDIO] y [/AUDIO]. Todo lo que aparezca entre esos marcadores se enviará al usuario como nota de voz con la voz de Álex. Todo lo demás se enviará como texto normal. Puedes combinar texto + audio en la misma respuesta.',
+    list,
+    'Ejemplo de formato: "Hola, mira lo que te voy a contar: [AUDIO]Bienvenido, me alegra hablar contigo[/AUDIO] ¿Qué te parece?"',
+  ].join('\n\n');
+}
+
+// Split response into parts: { type: 'text'|'audio', content }
+function splitAudioParts(response) {
+  if (!response || !response.includes('[AUDIO]')) return [{ type: 'text', content: response }];
+  const parts = [];
+  const re = /\[AUDIO\]([\s\S]*?)\[\/AUDIO\]/g;
+  let lastIndex = 0;
+  let m;
+  while ((m = re.exec(response)) !== null) {
+    const before = response.slice(lastIndex, m.index).trim();
+    if (before) parts.push({ type: 'text', content: before });
+    const audioText = (m[1] || '').trim();
+    if (audioText) parts.push({ type: 'audio', content: audioText });
+    lastIndex = re.lastIndex;
+  }
+  const tail = response.slice(lastIndex).trim();
+  if (tail) parts.push({ type: 'text', content: tail });
+  return parts.length ? parts : [{ type: 'text', content: response }];
 }
 
 // ---------------------------------------------------------------------------
@@ -337,13 +378,15 @@ async function findCrmContact(clientId, phone) {
   return contact;
 }
 
-async function saveCrmMessage(clientId, contactId, channel, direction, senderName, content) {
+async function saveCrmMessage(clientId, contactId, channel, direction, senderName, content, agentDecisionId = null) {
   if (!supabase || !clientId) return;
   try {
-    await supabase.from('crm_messages').insert({
+    const row = {
       client_id: clientId, contact_id: contactId, channel, direction,
       sender_name: senderName, content, status: 'sent',
-    });
+    };
+    if (agentDecisionId) row.agent_decision_id = agentDecisionId;
+    await supabase.from('crm_messages').insert(row);
   } catch (err) {
     console.error('[WA] Error saving CRM message:', err.message);
   }
@@ -406,6 +449,15 @@ async function extractFileContext(files) {
     } catch { texts.push(`[${f.file_name}]`); }
   }
   return texts.join('\n');
+}
+
+// ---------------------------------------------------------------------------
+// Voice note sending (ElevenLabs TTS)
+// ---------------------------------------------------------------------------
+async function sendTextAsVoice(client, chatId, text, voiceId) {
+  const audioBuffer = await textToSpeech(text, voiceId || getDefaultVoiceId());
+  const media = new MessageMedia('audio/mpeg', audioBuffer.toString('base64'), 'voice.mp3');
+  await client.sendMessage(chatId, media, { sendAudioAsVoice: true });
 }
 
 // ---------------------------------------------------------------------------
@@ -499,6 +551,9 @@ async function processAccumulatedMessages(session, chatId, messages) {
     const localDocs = loadSetterDocs();
     if (localDocs) systemParts.push(`Documentación del negocio:\n${localDocs}`);
     if (setterConfig.docs) systemParts.push(`Conocimiento adicional:\n${setterConfig.docs.slice(0, 4000)}`);
+    // Audio phrases: LLM wraps these in [AUDIO]...[/AUDIO] to trigger voice notes
+    const audioBlock = buildAudioInstructions(setterConfig.audioPhrases);
+    if (audioBlock) systemParts.push(audioBlock);
 
     // Client-level context (business info, community, general docs)
     if (clientCtx) systemParts.push(clientCtx);
@@ -538,12 +593,46 @@ async function processAccumulatedMessages(session, chatId, messages) {
       }
     }
     if (fileCtx) systemParts.push(`Documentos del contacto:\n${fileCtx}`);
+
+    // Brain: inject approved learnings into system prompt
+    const agentNameForBrain = setterConfig.profileName ? `setter_${setterConfig.profileName.toLowerCase().replace(/\s+/g, '_')}` : 'setter';
+    const { getApprovedLearnings, formatLearningsForPrompt, captureDecision, markLearningsApplied } = await import('../utils/agent-brain.js');
+    const learnings = await getApprovedLearnings({ clientId, agentName: agentNameForBrain, topN: 8 });
+    const learningsBlock = formatLearningsForPrompt(learnings);
+    if (learningsBlock) systemParts.push(learningsBlock);
+
     const staticSystem = systemParts.join('\n\n');
 
     // Pass setter profile name so orchestrator can tag the usage
-    orchestrator._currentSetterName = setterConfig.profileName ? `setter_${setterConfig.profileName.toLowerCase().replace(/\s+/g, '_')}` : 'setter';
+    orchestrator._currentSetterName = agentNameForBrain;
     const result = await orchestrator.setterReply(staticSystem, combinedBody, sessionId);
     const response = result.response || 'Sin respuesta.';
+
+    // Brain: capture decision (skips test clients). Await to link with CRM message.
+    const decisionId = await captureDecision({
+      clientId,
+      contactId: crmContact?.id,
+      agentName: agentNameForBrain,
+      actionType: 'reply',
+      input: { user_message: combinedBody, chat_name: last.chatName },
+      output: { response },
+      context: {
+        pipeline_id: setterConfig.pipelineId || null,
+        profile_name: setterConfig.profileName || null,
+        has_contact: !!crmContact,
+        contact_status: crmContact?.status || null,
+        has_file_ctx: !!fileCtx,
+        learnings_injected: learnings.length,
+      },
+      model: result._meta?.model,
+      tokensIn: result._meta?.tokensIn,
+      tokensOut: result._meta?.tokensOut,
+      durationMs: result._meta?.durationMs,
+      sessionId,
+    }).catch(() => null);
+    if (learnings.length > 0) {
+      markLearningsApplied(learnings.map(l => l.id)).catch(() => {});
+    }
 
     // Human-like delay
     if (!last.isGroupCommand) {
@@ -568,11 +657,27 @@ async function processAccumulatedMessages(session, chatId, messages) {
     }
 
     addToHistory(session, chatId, 'assistant', response);
-    for (const chunk of splitMessage(response)) await session.client.sendMessage(chatId, chunk);
+    // Split response into text + audio parts. Audio parts (wrapped in [AUDIO]...[/AUDIO])
+    // are sent as voice notes via ElevenLabs TTS; text parts go as normal WhatsApp text.
+    const audioVoiceId = setterConfig.voiceId || getDefaultVoiceId();
+    const parts = splitAudioParts(response);
+    for (const part of parts) {
+      if (part.type === 'audio' && isElevenLabsConfigured() && audioVoiceId) {
+        try {
+          await sendTextAsVoice(session.client, chatId, part.content, audioVoiceId);
+        } catch (err) {
+          console.error(`[WA:${clientId?.slice(0,8)}] TTS error, falling back to text:`, err.message);
+          for (const chunk of splitMessage(part.content)) await session.client.sendMessage(chatId, chunk);
+        }
+      } else {
+        const textContent = part.type === 'audio' ? part.content : part.content;
+        for (const chunk of splitMessage(textContent)) await session.client.sendMessage(chatId, chunk);
+      }
+    }
     console.log(`[WA:${clientId?.slice(0,8)}] -> ${last.chatName}: ${response.slice(0, 80)}...`);
 
-    // Persist outbound
-    if (crmContact) saveCrmMessage(clientId, crmContact.id, 'whatsapp', 'outbound', setterConfig.profileName || 'AI Setter', response).catch(() => {});
+    // Persist outbound (con decision_id para permitir feedback desde CRM)
+    if (crmContact) saveCrmMessage(clientId, crmContact.id, 'whatsapp', 'outbound', setterConfig.profileName || 'AI Setter', response, decisionId).catch(() => {});
     if (agentConvId) saveAgentMessage(clientId, agentConvId, 'assistant', response).catch(() => {});
     if (!last.isGroupCommand) forwardToGroup(session, last.senderName, last.chatName, combinedBody, response).catch(() => {});
 
@@ -781,16 +886,22 @@ export function registerWhatsAppRoutes(app) {
     };
   });
 
-  // Send message
+  // Send message (texto o audio TTS)
   app.post('/api/whatsapp/send', async (req) => {
-    const { to, message, clientId, accountIndex: acctIdx } = req.body;
+    const { to, message, clientId, accountIndex: acctIdx, asAudio, voiceId } = req.body;
     const accountIndex = parseInt(acctIdx || '1', 10);
     if (!to || !message) return { error: 'to y message son requeridos' };
     if (!clientId) return { error: 'clientId es requerido' };
     const session = getSession(clientId, accountIndex);
     if (!session?.isReady) return { error: `WhatsApp no conectado para este cliente (cuenta ${accountIndex})` };
+    const chatId = to.includes('@') ? to : `${to}@c.us`;
     try {
-      await session.client.sendMessage(to.includes('@') ? to : `${to}@c.us`, message);
+      if (asAudio) {
+        if (!isElevenLabsConfigured()) return { error: 'ElevenLabs no configurado (falta ELEVENLABS_API_KEY)' };
+        await sendTextAsVoice(session.client, chatId, message, voiceId);
+        return { ok: true, audio: true };
+      }
+      await session.client.sendMessage(chatId, message);
       return { ok: true };
     } catch (err) {
       return { error: err.message };
