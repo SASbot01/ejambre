@@ -924,12 +924,53 @@ export function registerWhatsAppRoutes(app) {
     }
   });
 
-  // Send message (texto o audio TTS)
+  // Send message (texto o audio TTS) — routes to QR session or WhatsApp Cloud API
+  // based on whatsapp_config.connection_method.
   app.post('/api/whatsapp/send', async (req) => {
     const { to, message, clientId, accountIndex: acctIdx, asAudio, voiceId } = req.body;
     const accountIndex = parseInt(acctIdx || '1', 10);
     if (!to || !message) return { error: 'to y message son requeridos' };
     if (!clientId) return { error: 'clientId es requerido' };
+
+    // Check if this slot is configured for Cloud API — use Meta graph.
+    if (supabase) {
+      const { data: cfg } = await supabase
+        .from('whatsapp_config')
+        .select('connection_method, cloud_phone_number_id, cloud_access_token')
+        .eq('client_id', clientId)
+        .eq('account_index', accountIndex)
+        .limit(1)
+        .maybeSingle();
+      if (cfg?.connection_method === 'cloud') {
+        if (!cfg.cloud_phone_number_id || !cfg.cloud_access_token) {
+          return { error: 'Cloud API no configurado (falta phone_number_id o access_token)' };
+        }
+        if (asAudio) return { error: 'Cloud API sender no soporta audio TTS aún; usa QR para notas de voz' };
+        const cleanTo = to.replace(/[^0-9]/g, '');
+        try {
+          const res = await fetch(`https://graph.facebook.com/v20.0/${cfg.cloud_phone_number_id}/messages`, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${cfg.cloud_access_token}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              messaging_product: 'whatsapp',
+              to: cleanTo,
+              type: 'text',
+              text: { body: message },
+            }),
+          });
+          const json = await res.json().catch(() => ({}));
+          if (!res.ok) return { error: `Cloud API ${res.status}: ${json?.error?.message || 'send failed'}` };
+          return { ok: true, via: 'cloud', wamid: json?.messages?.[0]?.id || null };
+        } catch (err) {
+          return { error: `Cloud API fetch failed: ${err.message}` };
+        }
+      }
+    }
+
+    // QR path (whatsapp-web.js)
     const session = getSession(clientId, accountIndex);
     if (!session?.isReady) return { error: `WhatsApp no conectado para este cliente (cuenta ${accountIndex})` };
     const chatId = to.includes('@') ? to : `${to}@c.us`;
