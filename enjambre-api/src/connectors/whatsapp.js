@@ -125,7 +125,7 @@ async function getSetterConfig(session, { skipCache = false, contactPipelineId =
   try {
     const { data } = await supabase
       .from('whatsapp_config')
-      .select('setter_enabled, setter_message, setter_docs, setter_pipeline_id')
+      .select('setter_enabled, setter_message, setter_docs, setter_pipeline_id, setter_default_stage_key')
       .eq('client_id', session.clientId)
       .eq('account_index', session.accountIndex || 1)
       .limit(1)
@@ -142,11 +142,13 @@ async function getSetterConfig(session, { skipCache = false, contactPipelineId =
       } catch {} // Not JSON — treat as plain docs text
     }
 
+    const fallbackStageKey = data?.setter_default_stage_key || null;
     if (profiles) {
       // Multi-setter mode
       session.setterConfigCache = {
         enabled: !!data?.setter_enabled,
         _profiles: profiles,
+        defaultStageKey: fallbackStageKey,
         // Fallback fields for non-profile queries
         message: data?.setter_message || '',
         docs: '',
@@ -160,6 +162,7 @@ async function getSetterConfig(session, { skipCache = false, contactPipelineId =
         message: data?.setter_message || '',
         docs: data?.setter_docs || '',
         pipelineId: data?.setter_pipeline_id || null,
+        defaultStageKey: fallbackStageKey,
         profileName: null,
         _profiles: null,
       };
@@ -189,6 +192,7 @@ function resolveSetterProfile(config, contactPipelineId) {
     delayMinutes: profile.delay_minutes,
     audioPhrases: profile.audio_phrases || '',
     voiceId: profile.voice_id || null,
+    defaultStageKey: profile.default_stage_key || config.defaultStageKey || null,
     _profiles: config._profiles,
   };
 }
