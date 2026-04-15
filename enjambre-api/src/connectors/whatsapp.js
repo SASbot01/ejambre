@@ -68,6 +68,7 @@ function createSessionState(clientId, accountIndex = 1) {
     setterConfigLastFetch: 0,
     clientId,
     accountIndex,
+    intentionalDisconnect: false,
   };
 }
 
@@ -855,8 +856,13 @@ function createClientForSession(session) {
       supabase.from('whatsapp_config').update({ connected: false })
         .eq('client_id', clientId).eq('account_index', accountIndex).catch(() => {});
     }
-    // Reconnect
+    if (session.intentionalDisconnect) {
+      console.log(`[WA:${clientId?.slice(0,8)}:${accountIndex}] Intentional disconnect — skipping auto-reconnect.`);
+      return;
+    }
+    // Reconnect (only for unexpected drops)
     setTimeout(() => {
+      if (session.intentionalDisconnect) return;
       console.log(`[WA:${clientId?.slice(0,8)}:${accountIndex}] Reconnecting...`);
       client.initialize().catch(err => console.error(`[WA:${clientId?.slice(0,8)}:${accountIndex}] Reconnect error:`, err.message));
     }, 10_000);
@@ -1045,6 +1051,57 @@ export function registerWhatsAppRoutes(app) {
       sessions.delete(key);
       startSession(clientId, accountIndex);
       return { ok: true, message: 'Session starting — scan QR when ready', sessionOwner: clientId, accountIndex };
+    } catch (err) {
+      return { error: err.message };
+    }
+  });
+
+  // Full disconnect — logs out of WhatsApp Web, clears local auth, deletes session.
+  // After this the next /restart will generate a fresh QR (no cached credentials).
+  app.post('/api/whatsapp/disconnect', async (req) => {
+    const { clientId, accountIndex: acctIdx } = req.body || {};
+    const accountIndex = parseInt(acctIdx || '1', 10);
+    if (!clientId) return { error: 'clientId es requerido' };
+    const key = sessionKey(clientId, accountIndex);
+    const existing = getSession(clientId, accountIndex);
+    try {
+      if (existing) {
+        existing.intentionalDisconnect = true;
+        existing.isReady = false;
+        existing.currentQR = null;
+        if (existing.client) {
+          // logout() unlinks the device on WhatsApp side + clears LocalAuth files.
+          // Falls back to destroy() if logout fails (e.g. already disconnected).
+          try {
+            await existing.client.logout();
+          } catch {
+            await existing.client.destroy().catch(() => {});
+          }
+        }
+      }
+      sessions.delete(key);
+
+      // Remove LocalAuth directory to guarantee fresh QR next time.
+      // whatsapp-web.js stores auth per clientId; same dir is reused across account_indexes
+      // of the same clientId, so only wipe it when no other session for this clientId is alive.
+      const anyOtherForClient = [...sessions.keys()].some(k => k.startsWith(`${clientId}:`));
+      if (!anyOtherForClient) {
+        try {
+          const authDir = path.join(WA_AUTH_BASE, clientId);
+          if (fs.existsSync(authDir)) fs.rmSync(authDir, { recursive: true, force: true });
+        } catch (err) {
+          console.warn(`[WA:${clientId?.slice(0,8)}:${accountIndex}] Could not remove auth dir: ${err.message}`);
+        }
+      }
+
+      if (supabase) {
+        await supabase.from('whatsapp_config')
+          .update({ connected: false })
+          .eq('client_id', clientId)
+          .eq('account_index', accountIndex);
+      }
+
+      return { ok: true, message: 'Disconnected — auth cleared' };
     } catch (err) {
       return { error: err.message };
     }
