@@ -44,6 +44,8 @@ services:
       - SOC_USERNAME=${SOC_USERNAME}
       - SOC_PASSWORD=${SOC_PASSWORD}
       - SOC_COMPANY_DOMAIN=${SOC_COMPANY_DOMAIN:-blackwolfsec.io}
+      # ManyChat webhook secret (shared secret for /api/webhooks/manychat)
+      - MANYCHAT_WEBHOOK_SECRET=${MANYCHAT_WEBHOOK_SECRET}
       # Supabase
       - SUPABASE_URL=${SUPABASE_URL}
       - SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_KEY}

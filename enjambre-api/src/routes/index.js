@@ -1,6 +1,7 @@
 import { orchestrator } from '../agents/orchestrator.js';
 import { eventBus } from '../events/event-bus.js';
 import { query, queryOne } from '../config/database.js';
+import { supabase } from '../config/database.js';
 import { authenticate } from '../auth/auth.js';
 import { enrollLead } from '../workers/sequence-worker.js';
 import { registerBrainRoutes } from './agent-brain.js';
@@ -157,6 +158,126 @@ export function registerRoutes(app) {
     });
 
     return { ok: true };
+  });
+
+  // ============================================
+  // WEBHOOK MANYCHAT (recibe conversaciones WhatsApp/Instagram desde ManyChat)
+  // Configurar en ManyChat → Flow → External Request:
+  //   POST https://enjambre.blackwolfsec.io/api/webhooks/manychat
+  //   Header: x-webhook-secret: <MANYCHAT_WEBHOOK_SECRET>
+  //   Body JSON:
+  //     { clientId, channel: "whatsapp"|"instagram", direction: "inbound"|"outbound",
+  //       subscriber: { id, name, phone, ig_username, email },
+  //       message: { text, timestamp? } }
+  // ============================================
+  app.post('/api/webhooks/manychat', async (req) => {
+    if (!supabase) return { error: 'supabase client not available' };
+
+    const { clientId, channel, direction, subscriber, message } = req.body || {};
+    if (!clientId) return { error: 'clientId es requerido' };
+
+    // Validate webhook secret: per-client manychat_config.webhook_secret takes
+    // precedence; falls back to server-wide MANYCHAT_WEBHOOK_SECRET env var.
+    const provided = req.headers['x-webhook-secret'] || req.body?.secret;
+    const { data: cfg } = await supabase
+      .from('manychat_config')
+      .select('webhook_secret')
+      .eq('client_id', clientId)
+      .limit(1)
+      .maybeSingle();
+    const expected = cfg?.webhook_secret || process.env.MANYCHAT_WEBHOOK_SECRET;
+    if (!expected) return { error: 'webhook secret not configured for this client' };
+    if (provided !== expected) return { error: 'unauthorized' };
+    if (!['whatsapp', 'instagram'].includes(channel)) return { error: 'channel debe ser whatsapp o instagram' };
+    if (!['inbound', 'outbound'].includes(direction)) return { error: 'direction debe ser inbound o outbound' };
+    if (!message?.text) return { error: 'message.text es requerido' };
+    if (!subscriber || typeof subscriber !== 'object') return { error: 'subscriber es requerido' };
+
+    let contact = null;
+    try {
+      if (channel === 'whatsapp') {
+        const phone = String(subscriber.phone || '').replace(/\D/g, '');
+        if (!phone) return { error: 'subscriber.phone es requerido para channel=whatsapp' };
+        const { data: existing } = await supabase
+          .from('crm_contacts')
+          .select('id')
+          .eq('client_id', clientId)
+          .or(`phone.ilike.%${phone}%,whatsapp.ilike.%${phone}%`)
+          .limit(1);
+        if (existing?.length) {
+          contact = existing[0];
+        } else {
+          const { data: created, error } = await supabase
+            .from('crm_contacts')
+            .insert({
+              client_id: clientId,
+              name: subscriber.name || `+${phone}`,
+              phone,
+              whatsapp: phone,
+              email: subscriber.email || null,
+              status: 'lead',
+              source: 'manychat',
+              notes: 'Auto-creado desde ManyChat (WhatsApp)',
+            })
+            .select('id')
+            .single();
+          if (error) return { error: `crm_contacts insert: ${error.message}` };
+          contact = created;
+        }
+      } else {
+        const igRaw = String(subscriber.ig_username || '').replace(/^@/, '').trim();
+        if (!igRaw) return { error: 'subscriber.ig_username es requerido para channel=instagram' };
+        const { data: existing } = await supabase
+          .from('crm_contacts')
+          .select('id')
+          .eq('client_id', clientId)
+          .eq('instagram', igRaw)
+          .limit(1);
+        if (existing?.length) {
+          contact = existing[0];
+        } else {
+          const { data: created, error } = await supabase
+            .from('crm_contacts')
+            .insert({
+              client_id: clientId,
+              name: subscriber.name || igRaw,
+              instagram: igRaw,
+              email: subscriber.email || null,
+              status: 'lead',
+              source: 'manychat',
+              notes: 'Auto-creado desde ManyChat (Instagram)',
+            })
+            .select('id')
+            .single();
+          if (error) return { error: `crm_contacts insert: ${error.message}` };
+          contact = created;
+        }
+      }
+
+      if (!contact?.id) return { error: 'no se pudo resolver crm_contact' };
+
+      const senderName = direction === 'inbound'
+        ? (subscriber.name || (channel === 'instagram' ? subscriber.ig_username : `+${subscriber.phone}`) || 'ManyChat user')
+        : 'ManyChat bot';
+
+      const row = {
+        client_id: clientId,
+        contact_id: contact.id,
+        channel: `${channel}_manychat`,
+        direction,
+        sender_name: senderName,
+        content: message.text,
+        status: 'sent',
+      };
+      if (message.timestamp) row.created_at = message.timestamp;
+
+      const { error: msgErr } = await supabase.from('crm_messages').insert(row);
+      if (msgErr) return { error: `crm_messages insert: ${msgErr.message}` };
+
+      return { ok: true, contact_id: contact.id };
+    } catch (err) {
+      return { error: err.message };
+    }
   });
 
   // ============================================

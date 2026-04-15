@@ -38,7 +38,7 @@ export function verifyToken(token) {
 }
 
 // Fastify auth hook - skip for health, login, and webhooks
-const PUBLIC_PATHS = ['/health', '/api/auth/login', '/api/forms/webhook', '/api/webhooks/soc', '/api/webhooks/whatsapp', '/api/webhooks/central'];
+const PUBLIC_PATHS = ['/health', '/api/auth/login', '/api/forms/webhook', '/api/webhooks/soc', '/api/webhooks/whatsapp', '/api/webhooks/central', '/api/webhooks/manychat'];
 
 export function authHook(app) {
   app.addHook('onRequest', async (req, reply) => {
