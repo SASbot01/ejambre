@@ -343,6 +343,19 @@ export default function HomePage({ role, user }) {
             </div>
           </div>
         </div>
+
+        {clientSlug === 'asesorias-suiza' && (
+          <div className="home-mini-card" onClick={() => window.open('/asesoriasuizaguia', '_blank', 'noopener')}>
+            <div className="home-mini-card__icon" style={{ background: 'linear-gradient(135deg, #D82828, #0B0B0C)' }}>🌐</div>
+            <div className="home-mini-card__content">
+              <h4>Webs Growth Passport</h4>
+              <div className="home-mini-card__links">
+                <button onClick={(e) => { e.stopPropagation(); window.open('/asesoriasuizaguia', '_blank', 'noopener') }}>Guía (Landing+Form+Thx)</button>
+                <button onClick={(e) => { e.stopPropagation(); window.open('/asesoriasuiza', '_blank', 'noopener') }}>VSL Método</button>
+              </div>
+            </div>
+          </div>
+        )}
       </section>
 
       {/* Bottom row: Constraints + AI Agent Chat */}
