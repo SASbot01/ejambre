@@ -7,6 +7,7 @@ import { enrollLead } from '../workers/sequence-worker.js';
 import { registerBrainRoutes } from './agent-brain.js';
 import { registerWeeklyFeedbackRoutes } from './weekly-feedback.js';
 import { registerDiscordAgentRoutes } from './agent-discord.js';
+import { registerAiUsageRoutes } from './ai-usage.js';
 
 export function registerRoutes(app) {
   // ============================================
@@ -545,6 +546,11 @@ export function registerRoutes(app) {
   // DISCORD AGENT — control plane (proxy al bot Python)
   // ============================================
   registerDiscordAgentRoutes(app);
+
+  // ============================================
+  // AI USAGE — observabilidad de coste/tokens Claude
+  // ============================================
+  registerAiUsageRoutes(app);
 
   // ============================================
   // SETUP: escuchar eventos automáticos

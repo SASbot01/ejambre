@@ -524,9 +524,11 @@ async function processAccumulatedMessages(session, chatId, messages) {
 
   // Persist inbound — auto-create contact if unknown so we never lose history
   const crmContact = await findOrCreateCrmContact(clientId, last.senderNumber, last.senderName).catch(() => null);
-  if (crmContact) saveCrmMessage(clientId, crmContact.id, 'whatsapp', 'inbound', last.senderName, combinedBody).catch(() => {});
+  if (crmContact) saveCrmMessage(clientId, crmContact.id, 'whatsapp', 'inbound', last.senderName, combinedBody)
+    .catch(err => console.error(`[WA:${clientId?.slice(0,8)}] saveCrmMessage(inbound) failed:`, err?.message));
   const agentConvId = await getOrCreateAgentConversation(session, chatId, last.senderName, last.senderNumber).catch(() => null);
-  if (agentConvId) saveAgentMessage(clientId, agentConvId, 'user', combinedBody).catch(() => {});
+  if (agentConvId) saveAgentMessage(clientId, agentConvId, 'user', combinedBody)
+    .catch(err => console.error(`[WA:${clientId?.slice(0,8)}] saveAgentMessage(user) failed:`, err?.message));
 
   console.log(`[WA:${clientId?.slice(0,8)}] <- ${last.chatName}: ${combinedBody.slice(0, 80)}`);
 
@@ -669,7 +671,8 @@ async function processAccumulatedMessages(session, chatId, messages) {
       sessionId,
     }).catch(() => null);
     if (learnings.length > 0) {
-      markLearningsApplied(learnings.map(l => l.id)).catch(() => {});
+      markLearningsApplied(learnings.map(l => l.id))
+        .catch(err => console.error(`[WA:${clientId?.slice(0,8)}] markLearningsApplied failed:`, err?.message));
     }
 
     // Human-like delay
@@ -715,7 +718,8 @@ async function processAccumulatedMessages(session, chatId, messages) {
     console.log(`[WA:${clientId?.slice(0,8)}] -> ${last.chatName}: ${response.slice(0, 80)}...`);
 
     // Persist outbound (con decision_id para permitir feedback desde CRM)
-    if (crmContact) saveCrmMessage(clientId, crmContact.id, 'whatsapp', 'outbound', setterConfig.profileName || 'AI Setter', response, decisionId).catch(() => {});
+    if (crmContact) saveCrmMessage(clientId, crmContact.id, 'whatsapp', 'outbound', setterConfig.profileName || 'AI Setter', response, decisionId)
+      .catch(err => console.error(`[WA:${clientId?.slice(0,8)}] saveCrmMessage(outbound) failed:`, err?.message));
 
     // Auto-assign pipeline/stage if the contact has none and the setter has defaults
     // (lead-magnet-like placement): first AI reply lands the contact on the
@@ -727,8 +731,10 @@ async function processAccumulatedMessages(session, chatId, messages) {
         if (error) console.error('[WA] auto-assign pipeline failed:', error.message);
       });
     }
-    if (agentConvId) saveAgentMessage(clientId, agentConvId, 'assistant', response).catch(() => {});
-    if (!last.isGroupCommand) forwardToGroup(session, last.senderName, last.chatName, combinedBody, response).catch(() => {});
+    if (agentConvId) saveAgentMessage(clientId, agentConvId, 'assistant', response)
+      .catch(err => console.error(`[WA:${clientId?.slice(0,8)}] saveAgentMessage(assistant) failed:`, err?.message));
+    if (!last.isGroupCommand) forwardToGroup(session, last.senderName, last.chatName, combinedBody, response)
+      .catch(err => console.error(`[WA:${clientId?.slice(0,8)}] forwardToGroup failed:`, err?.message));
 
     eventBus.publish('chat.whatsapp', 'whatsapp', { user: last.senderName, phone: last.senderNumber, clientId });
   } catch (err) {
@@ -854,7 +860,8 @@ function createClientForSession(session) {
     // Update connected = false for this account_index
     if (supabase && clientId) {
       supabase.from('whatsapp_config').update({ connected: false })
-        .eq('client_id', clientId).eq('account_index', accountIndex).catch(() => {});
+        .eq('client_id', clientId).eq('account_index', accountIndex)
+        .catch(err => console.error(`[WA:${clientId?.slice(0,8)}:${accountIndex}] update connected=false failed:`, err?.message));
     }
     if (session.intentionalDisconnect) {
       console.log(`[WA:${clientId?.slice(0,8)}:${accountIndex}] Intentional disconnect — skipping auto-reconnect.`);

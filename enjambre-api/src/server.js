@@ -6,6 +6,7 @@ import { registerRoutes } from './routes/index.js';
 import { startSequenceWorker } from './workers/sequence-worker.js';
 import { startBrainWorker } from './workers/brain-worker.js';
 import { registerWhatsAppRoutes } from './connectors/whatsapp.js';
+import { startDCCConnector } from './connectors/detrasdecamara.js';
 
 const app = Fastify({ logger: true });
 
@@ -62,3 +63,16 @@ app.log.info(`BlackWolf API activo en puerto ${port}`);
 // Iniciar workers
 startSequenceWorker();
 startBrainWorker();
+
+// Iniciar conectores opcionales (arranque condicional — no revientan si falta env)
+if (process.env.DCC_SUPABASE_KEY) {
+  startDCCConnector({ eventBus, db }).catch((err) => {
+    app.log.error({ err }, '[DCC] fallo arrancando connector');
+  });
+} else {
+  app.log.info('[DCC] connector deshabilitado (falta DCC_SUPABASE_KEY)');
+}
+
+// Nota: Discord connector Node (connectors/discord.js) está deprecado.
+// El bot real es el sidecar Python en agente-discord/ (puerto 8788).
+// No arrancamos aquí para evitar bot duplicado.

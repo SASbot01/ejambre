@@ -90,13 +90,23 @@ async function processEnrollments() {
 
       const message = renderTemplate(currentStep.template, enrollment);
 
-      // Execute based on channel
+      // Execute based on channel — capturamos éxito explícitamente para retry
+      let stepSucceeded = true
+      let stepError = null
       if (currentStep.channel === 'whatsapp' && enrollment.telefono) {
-        await sendWhatsAppNotification(enrollment.telefono, message);
-        console.log(`[Sequences] WhatsApp sent to ${enrollment.telefono} (step ${currentStep.step})`);
+        try {
+          await sendWhatsAppNotification(enrollment.telefono, message);
+          console.log(`[Sequences] WhatsApp sent to ${enrollment.telefono} (step ${currentStep.step})`);
+        } catch (e) {
+          stepSucceeded = false; stepError = e?.message || String(e);
+          console.error(`[Sequences] WhatsApp failed to ${enrollment.telefono}:`, stepError);
+        }
       } else if (currentStep.channel === 'email' && enrollment.email) {
         const subject = `${enrollment.producto || 'BlackWolf'} — Seguimiento`;
         const sent = await sendEmail(enrollment.email, subject, message);
+        if (!sent) {
+          stepSucceeded = false; stepError = 'email send returned false (no api key or http error)';
+        }
         await eventBus.publish(sent ? 'sequence.email_sent' : 'sequence.email_pending', 'crm', {
           lead_id: enrollment.lead_id,
           email: enrollment.email,
@@ -104,7 +114,38 @@ async function processEnrollments() {
         });
       }
 
-      // Move to next step
+      // Retry policy: 3 reintentos con backoff (1h, 4h, 24h). Después → failed.
+      const MAX_RETRIES = 3
+      const BACKOFF_MS = [60, 240, 1440].map(m => m * 60_000) // 1h, 4h, 24h
+
+      if (!stepSucceeded) {
+        const nextRetry = (enrollment.retry_count || 0) + 1
+        if (nextRetry > MAX_RETRIES) {
+          await queryOne(
+            `UPDATE sequence_enrollments
+             SET status = 'failed', failed_at = NOW(), last_error = $1
+             WHERE id = $2 RETURNING *`,
+            [stepError?.slice(0, 500), enrollment.id]
+          );
+          console.warn(`[Sequences] Enrollment ${enrollment.id} → failed after ${MAX_RETRIES} retries`);
+          await eventBus.publish('sequence.failed', 'crm', {
+            lead_id: enrollment.lead_id, sequence: enrollment.sequence_name, error: stepError,
+          });
+        } else {
+          const delay = BACKOFF_MS[nextRetry - 1] || BACKOFF_MS[BACKOFF_MS.length - 1]
+          const retryAt = new Date(Date.now() + delay).toISOString()
+          await queryOne(
+            `UPDATE sequence_enrollments
+             SET retry_count = $1, next_fire_at = $2, last_error = $3
+             WHERE id = $4 RETURNING *`,
+            [nextRetry, retryAt, stepError?.slice(0, 500), enrollment.id]
+          );
+          console.log(`[Sequences] Enrollment ${enrollment.id} → retry ${nextRetry}/${MAX_RETRIES} at ${retryAt}`);
+        }
+        continue
+      }
+
+      // Move to next step (éxito) — reseteamos retry_count
       const nextStep = steps[enrollment.current_step + 1];
       const nextFireAt = nextStep
         ? new Date(Date.now() + nextStep.delay_hours * 3600_000).toISOString()
@@ -113,14 +154,14 @@ async function processEnrollments() {
       if (nextFireAt) {
         await queryOne(
           `UPDATE sequence_enrollments
-           SET current_step = current_step + 1, next_fire_at = $1, status = 'active'
+           SET current_step = current_step + 1, next_fire_at = $1, status = 'active', retry_count = 0, last_error = NULL
            WHERE id = $2 RETURNING *`,
           [nextFireAt, enrollment.id]
         );
       } else {
         await queryOne(
           `UPDATE sequence_enrollments
-           SET current_step = current_step + 1, next_fire_at = NULL, status = 'completed'
+           SET current_step = current_step + 1, next_fire_at = NULL, status = 'completed', retry_count = 0, last_error = NULL
            WHERE id = $1 RETURNING *`,
           [enrollment.id]
         );
