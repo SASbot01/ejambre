@@ -1,0 +1,58 @@
+# Dona — ejército de agentes autónomos.
+# Layered sobre docker-compose.yml principal:
+#   docker compose -f docker-compose.yml -f docker-compose.dona.yml up -d dona-general dona-crm
+
+services:
+  # ============================================
+  # Dona General — punto de contacto con humanos
+  # ============================================
+  dona-general:
+    build:
+      context: ./enjambre-api
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    command: ["node", "src/army/general.js"]
+    environment:
+      - NODE_ENV=production
+      - GENERAL_PORT=8789
+      - AGENT_GENERAL_MODEL=${AGENT_GENERAL_MODEL:-claude-sonnet-4-5-20250929}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-enjambre}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-enjambre}
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_KEY}
+    expose:
+      - "8789"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - enjambre
+
+  # ============================================
+  # Dona CRM — patrullaje pipeline, setters, leads
+  # Dry-run por defecto hasta validación
+  # ============================================
+  dona-crm:
+    build:
+      context: ./enjambre-api
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    command: ["node", "src/army/commanders/crm.js"]
+    environment:
+      - NODE_ENV=production
+      - ARMY_DRY_RUN=1
+      - AGENT_CRM_MODEL=${AGENT_CRM_MODEL:-claude-haiku-4-5-20251001}
+      - AGENT_CRM_PATROL_SEC=${AGENT_CRM_PATROL_SEC:-300}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-enjambre}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-enjambre}
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_KEY}
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - enjambre
